@@ -1,0 +1,41 @@
+[build-system]
+requires = [ "setuptools>=42", "wheel",]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyflexweb"
+version = "0.1.1"
+description = "Download IBKR Flex reports using the Interactive Brokers flex web service"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [ "Programming Language :: Python :: 3", "Programming Language :: Python :: 3.8", "Programming Language :: Python :: 3.9", "Programming Language :: Python :: 3.10", "Programming Language :: Python :: 3.11", "License :: OSI Approved :: MIT License", "Operating System :: OS Independent",]
+dependencies = [ "requests>=2.25.0", "platformdirs>=2.0.0", "click>=8.1.8", "importlib_metadata>=1.0; python_version<'3.8'",]
+[[project.authors]]
+name = "Your Name"
+email = "your.email@example.com"
+
+[dependency-groups]
+dev = [ "pytest>=8.3.5",]
+
+[project.license]
+text = "MIT"
+
+[project.optional-dependencies]
+dev = [ "pytest>=6.0.0", "black>=22.0.0", "ruff>=0.0.240", "isort>=5.0.0", "toml>=0.10.0",]
+
+[project.scripts]
+pyflexweb = "pyflexweb.cli:main"
+
+[tool.setuptools]
+packages = [ "pyflexweb",]
+
+[tool.ruff]
+line-length = 140
+target-version = "py38"
+
+[tool.black]
+line-length = 140
+target-version = [ "py38",]
+
+[tool.pytest]
+testpaths = [ "tests",]
