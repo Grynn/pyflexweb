@@ -204,15 +204,40 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 git clone https://github.com/yourusername/pyflexweb.git
 cd pyflexweb
 
-# Set up a virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Install development dependencies using uv
+uv sync --all-extras
 
-# Install development dependencies
-pip install -e ".[dev]"
+# Install pre-commit hooks
+uv run pre-commit install
 
 # Run tests
-pytest
+uv run pytest
+
+# Run linting and formatting
+make lint
+# or manually:
+uv run pre-commit run --all-files
+```
+
+### Code Quality
+
+This project uses pre-commit hooks to ensure code quality:
+
+- **ruff**: Fast Python linter and formatter
+- **black**: Python code formatter
+- **Standard hooks**: trailing whitespace, end-of-file fixes, etc.
+
+The pre-commit hooks will run automatically on each commit. You can also run them manually:
+
+```bash
+# Run all pre-commit hooks
+make pre-commit-run
+
+# Run just ruff
+uv run ruff check --fix .
+
+# Run just black
+uv run black .
 ```
 
 ## License

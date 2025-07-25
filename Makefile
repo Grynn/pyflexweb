@@ -1,11 +1,19 @@
-.PHONY: lint test build dev install bump-patch bump-minor bump-major release
+.PHONY: lint test build dev install bump-patch bump-minor bump-major release pre-commit-install pre-commit-run
 
 lint:
-	@echo "Running linters..."
-	@uv run ruff check --fix .
-	@uv run isort --profile black .
-	@uv run black .
-	@echo "Linters completed successfully."
+	@echo "Running pre-commit hooks..."
+	@uv run pre-commit run --all-files
+	@echo "Linting completed successfully."
+
+pre-commit-install:
+	@echo "Installing pre-commit hooks..."
+	@uv run pre-commit install
+	@echo "Pre-commit hooks installed successfully."
+
+pre-commit-run:
+	@echo "Running pre-commit hooks on all files..."
+	@uv run pre-commit run --all-files
+	@echo "Pre-commit completed successfully."
 
 test:
 	@echo "Running tests..."
