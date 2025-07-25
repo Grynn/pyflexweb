@@ -284,6 +284,8 @@ def handle_download_command(args: Dict[str, Any], db: FlexDatabase) -> int:
 
         for attempt in range(1, args.max_attempts + 1):
             print(f"Attempt {attempt}/{args.max_attempts}...", end="", flush=True)
+            if attempt == 1:
+                time.sleep(args.poll_interval / 2)  # Initial delay before first attempt
             report_xml = client.get_report(request_id)
 
             if report_xml:
