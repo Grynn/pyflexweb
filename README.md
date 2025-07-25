@@ -223,8 +223,7 @@ uv run pre-commit run --all-files
 
 This project uses pre-commit hooks to ensure code quality:
 
-- **ruff**: Fast Python linter and formatter
-- **black**: Python code formatter
+- **ruff**: Fast Python linter and formatter (handles both linting and formatting)
 - **Standard hooks**: trailing whitespace, end-of-file fixes, etc.
 
 The pre-commit hooks will run automatically on each commit. You can also run them manually:
@@ -233,11 +232,11 @@ The pre-commit hooks will run automatically on each commit. You can also run the
 # Run all pre-commit hooks
 make pre-commit-run
 
-# Run just ruff
+# Run just ruff linting
 uv run ruff check --fix .
 
-# Run just black
-uv run black .
+# Run just ruff formatting
+uv run ruff format .
 ```
 
 ## License

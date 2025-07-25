@@ -177,7 +177,7 @@ def handle_fetch_command(args: Dict[str, Any], db: FlexDatabase) -> int:
         with open(output_file, "w", encoding="utf-8") as f:
             f.write(report_xml)
         print(f"Report saved to {output_file}")
-    except IOError as e:
+    except OSError as e:
         print(f"Error saving report: {e}")
         if request_info:
             db.update_request_status(args.request_id, "failed")
@@ -307,7 +307,7 @@ def handle_download_command(args: Dict[str, Any], db: FlexDatabase) -> int:
             with open(output_file, "w", encoding="utf-8") as f:
                 f.write(report_xml)
             print(f"Report saved to {output_file}")
-        except IOError as e:
+        except OSError as e:
             print(f"Error saving report: {e}")
             db.update_request_status(request_id, "failed")
             overall_success = False

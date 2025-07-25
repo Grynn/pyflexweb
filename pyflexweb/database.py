@@ -242,7 +242,7 @@ class FlexDatabase:
             cursor.execute(
                 """
                 SELECT r.request_id FROM requests r
-                WHERE r.query_id = ? 
+                WHERE r.query_id = ?
                   AND r.status = 'completed'
                   AND (r.last_updated > ? OR r.completed_at > ?)
                 ORDER BY r.last_updated DESC
