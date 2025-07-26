@@ -18,13 +18,25 @@ A command-line tool for downloading IBKR Flex reports using the Interactive Brok
 
 ## Installation
 
+Install from PyPI:
+
+```bash
+# Using uv (recommended)
+uv tool install pyflexweb
+
+# Or using pip
+pip install pyflexweb
+```
+
+For development installation:
+
 ```bash
 # Clone the repository
 git clone https://github.com/grynn/pyflexweb.git
 cd pyflexweb
 
-# Install the package
-uv tool install . # or pip install -e .
+# Install in development mode
+uv tool install -e . # or pip install -e .
 ```
 
 ## Usage
@@ -199,6 +211,8 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 5. Open a Pull Request
 
 ### Development Setup
+
+If you want to contribute to the project or modify the code:
 
 ```bash
 # Clone the repository
