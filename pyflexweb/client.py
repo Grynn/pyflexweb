@@ -2,7 +2,6 @@
 
 import sys
 import xml.etree.ElementTree as ET
-from typing import Optional
 
 import requests
 
@@ -17,7 +16,7 @@ class IBKRFlexClient:
     def __init__(self, token: str):
         self.token = token
 
-    def request_report(self, query_id: str) -> Optional[str]:
+    def request_report(self, query_id: str) -> str | None:
         """Request a report from IBKR and return the request ID if successful."""
         url = f"{self.REQUEST_URL}?t={self.token}&q={query_id}&v=3"
 
@@ -44,7 +43,7 @@ class IBKRFlexClient:
             print(f"Error parsing response: {e}", file=sys.stderr)
             return None
 
-    def get_report(self, request_id: str) -> Optional[str]:
+    def get_report(self, request_id: str) -> str | None:
         """Get a report using the request ID. Returns the XML content if successful."""
         url = f"{self.STATEMENT_URL}?t={self.token}&q={request_id}&v=3"
 

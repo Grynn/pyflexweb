@@ -2,9 +2,10 @@
 
 A command-line tool for downloading IBKR Flex reports using the Interactive Brokers flex web service.
 
+[![CI](https://github.com/grynn/pyflexweb/actions/workflows/ci.yml/badge.svg)](https://github.com/grynn/pyflexweb/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/pyflexweb.svg)](https://pypi.org/project/pyflexweb/)
 [![Python versions](https://img.shields.io/pypi/pyversions/pyflexweb.svg)](https://pypi.org/project/pyflexweb/)
-[![License](https://img.shields.io/github/license/yourusername/pyflexweb.svg)](https://github.com/grynn/pyflexweb/blob/main/LICENSE)
+[![License](https://img.shields.io/github/license/grynn/pyflexweb.svg)](https://github.com/grynn/pyflexweb/blob/main/LICENSE)
 
 ## Features
 
@@ -19,11 +20,11 @@ A command-line tool for downloading IBKR Flex reports using the Interactive Brok
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/pyflexweb.git
+git clone https://github.com/grynn/pyflexweb.git
 cd pyflexweb
 
 # Install the package
-uv tool install [-e] . # or pip install -e .
+uv tool install . # or pip install -e .
 ```
 
 ## Usage
@@ -86,6 +87,38 @@ request_id=$(pyflexweb request 123456)
 pyflexweb fetch $request_id --output my_report.xml
 ```
 
+#### Scripting Example
+
+```bash
+#!/bin/bash
+# Daily report download script
+
+# Request activity report
+request_id=$(pyflexweb request 123456)
+if [ $? -ne 0 ]; then
+    echo "Failed to request report" >&2
+    exit 1
+fi
+
+# Download the report
+pyflexweb fetch $request_id --output "activity_$(date +%Y%m%d).xml"
+```
+
+#### Download Multiple Reports
+
+```bash
+#!/bin/bash
+# Download all configured reports
+
+# Get list of query IDs
+queries=$(pyflexweb query list | tail -n +3 | awk '{print $1}')
+
+for query in $queries; do
+    echo "Downloading report for query $query..."
+    pyflexweb download --query $query
+done
+```
+
 ### Other Commands
 
 Check version information:
@@ -98,9 +131,11 @@ Get help on any command:
 
 ```bash
 pyflexweb --help
-pyflexweb query --help
-pyflexweb download --help
 ```
+
+## License
+
+This project is licensed under the terms of the GNU General Public License v3.0 or later. See the [LICENSE](LICENSE) file for details.
 
 ## Command Reference
 
@@ -132,40 +167,6 @@ Before using PyFlexWeb, you need to:
 2. Generate a Flex Web Service token
 
 For detailed instructions, see [IBKR's documentation](https://www.interactivebrokers.com/en/software/am/am/reports/flex_web_service_version_3.htm).
-
-## Advanced Usage
-
-### Scripting Example
-
-```bash
-#!/bin/bash
-# Daily report download script
-
-# Request activity report
-request_id=$(pyflexweb request 123456)
-if [ $? -ne 0 ]; then
-    echo "Failed to request report" >&2
-    exit 1
-fi
-
-# Download the report
-pyflexweb fetch $request_id --output "activity_$(date +%Y%m%d).xml"
-```
-
-### Download Multiple Reports
-
-```bash
-#!/bin/bash
-# Download all configured reports
-
-# Get list of query IDs
-queries=$(pyflexweb query list | tail -n +3 | awk '{print $1}')
-
-for query in $queries; do
-    echo "Downloading report for query $query..."
-    pyflexweb download --query $query
-done
-```
 
 ## Report Types
 
@@ -201,7 +202,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/pyflexweb.git
+git clone https://github.com/grynn/pyflexweb.git
 cd pyflexweb
 
 # Install development dependencies using uv
@@ -238,10 +239,6 @@ uv run ruff check --fix .
 # Run just ruff formatting
 uv run ruff format .
 ```
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 

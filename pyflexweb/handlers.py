@@ -3,13 +3,13 @@
 import os
 import time
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any
 
 from .client import IBKRFlexClient
 from .database import FlexDatabase
 
 
-def handle_token_command(args: Dict[str, Any], db: FlexDatabase) -> int:
+def handle_token_command(args: dict[str, Any], db: FlexDatabase) -> int:
     """Handle the 'token' command and its subcommands."""
     if args.subcommand == "set":
         db.set_token(args.token)
@@ -34,7 +34,7 @@ def handle_token_command(args: Dict[str, Any], db: FlexDatabase) -> int:
         return 1
 
 
-def handle_query_command(args: Dict[str, Any], db: FlexDatabase) -> int:
+def handle_query_command(args: dict[str, Any], db: FlexDatabase) -> int:
     """Handle the 'query' command and its subcommands."""
     if args.subcommand == "add":
         db.add_query(args.query_id, args.name)
@@ -89,7 +89,7 @@ def handle_query_command(args: Dict[str, Any], db: FlexDatabase) -> int:
         return 1
 
 
-def handle_request_command(args: Dict[str, Any], db: FlexDatabase) -> int:
+def handle_request_command(args: dict[str, Any], db: FlexDatabase) -> int:
     """Handle the 'request' command."""
     token = db.get_token()
     if not token:
@@ -116,7 +116,7 @@ def handle_request_command(args: Dict[str, Any], db: FlexDatabase) -> int:
     return 0
 
 
-def handle_fetch_command(args: Dict[str, Any], db: FlexDatabase) -> int:
+def handle_fetch_command(args: dict[str, Any], db: FlexDatabase) -> int:
     """Handle the 'fetch' command."""
     token = db.get_token()
     if not token:
@@ -190,7 +190,7 @@ def handle_fetch_command(args: Dict[str, Any], db: FlexDatabase) -> int:
     return 0
 
 
-def handle_download_command(args: Dict[str, Any], db: FlexDatabase) -> int:
+def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
     """Handle the 'download' command (all-in-one request and fetch)."""
     token = db.get_token()
     if not token:

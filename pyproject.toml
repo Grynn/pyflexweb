@@ -7,18 +7,18 @@ name = "pyflexweb"
 version = "0.1.1"
 description = "Download IBKR Flex reports using the Interactive Brokers flex web service"
 readme = "README.md"
-requires-python = ">=3.8"
-classifiers = [ "Programming Language :: Python :: 3", "Programming Language :: Python :: 3.8", "Programming Language :: Python :: 3.9", "Programming Language :: Python :: 3.10", "Programming Language :: Python :: 3.11", "License :: OSI Approved :: MIT License", "Operating System :: OS Independent",]
-dependencies = [ "requests>=2.25.0", "platformdirs>=2.0.0", "click>=8.1.8", "importlib_metadata>=1.0; python_version<'3.8'",]
+requires-python = ">=3.12"
+classifiers = [ "Programming Language :: Python :: 3", "Programming Language :: Python :: 3.12", "Programming Language :: Python :: 3.13", "Programming Language :: Python :: 3.14", "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)", "Operating System :: OS Independent",]
+dependencies = [ "requests>=2.25.0", "platformdirs>=2.0.0", "click>=8.1.8",]
 [[project.authors]]
-name = "Your Name"
-email = "your.email@example.com"
+name = "Vishal Doshi"
+email = "vishal.doshi@gmail.com"
 
 [dependency-groups]
 dev = [ "pytest>=8.3.5",]
 
 [project.license]
-text = "MIT"
+text = "GPL-3.0-or-later"
 
 [project.optional-dependencies]
 dev = [ "pytest>=6.0.0", "ruff>=0.0.240", "isort>=5.0.0", "toml>=0.10.0", "pre-commit>=3.0.0",]
@@ -31,7 +31,7 @@ packages = [ "pyflexweb",]
 
 [tool.ruff]
 line-length = 140
-target-version = "py38"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = [

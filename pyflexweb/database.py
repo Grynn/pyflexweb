@@ -3,7 +3,6 @@
 import os
 import sqlite3
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
 
 import platformdirs
 
@@ -130,7 +129,7 @@ class FlexDatabase:
         cursor.execute("INSERT OR REPLACE INTO config VALUES (?, ?)", ("token", token))
         self.conn.commit()
 
-    def get_token(self) -> Optional[str]:
+    def get_token(self) -> str | None:
         cursor = self.conn.cursor()
         cursor.execute("SELECT value FROM config WHERE key = ?", ("token",))
         result = cursor.fetchone()
@@ -158,7 +157,7 @@ class FlexDatabase:
         self.conn.commit()
         return cursor.rowcount > 0
 
-    def list_queries(self) -> List[Tuple[str, str]]:
+    def list_queries(self) -> list[tuple[str, str]]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT id, name FROM queries ORDER BY added_on")
         return cursor.fetchall()
@@ -171,7 +170,7 @@ class FlexDatabase:
         )
         self.conn.commit()
 
-    def update_request_status(self, request_id: str, status: str, output_path: Optional[str] = None) -> None:
+    def update_request_status(self, request_id: str, status: str, output_path: str | None = None) -> None:
         cursor = self.conn.cursor()
         now = datetime.now().isoformat()
 
@@ -187,7 +186,7 @@ class FlexDatabase:
             )
         self.conn.commit()
 
-    def get_request_info(self, request_id: str) -> Optional[Dict]:
+    def get_request_info(self, request_id: str) -> dict | None:
         cursor = self.conn.cursor()
         cursor.execute(
             "SELECT request_id, query_id, status, requested_at, completed_at, output_path FROM requests WHERE request_id = ?",
@@ -206,7 +205,7 @@ class FlexDatabase:
             "output_path": result[5],
         }
 
-    def get_query_info(self, query_id: str) -> Optional[Dict]:
+    def get_query_info(self, query_id: str) -> dict | None:
         cursor = self.conn.cursor()
         cursor.execute("SELECT id, name FROM queries WHERE id = ?", (query_id,))
         result = cursor.fetchone()
@@ -215,7 +214,7 @@ class FlexDatabase:
 
         return {"id": result[0], "name": result[1]}
 
-    def get_latest_request(self, query_id: str) -> Optional[Dict]:
+    def get_latest_request(self, query_id: str) -> dict | None:
         cursor = self.conn.cursor()
         cursor.execute(
             "SELECT request_id FROM requests WHERE query_id = ? ORDER BY requested_at DESC LIMIT 1",
@@ -227,7 +226,7 @@ class FlexDatabase:
 
         return self.get_request_info(result[0])
 
-    def get_queries_not_updated(self, hours: int = 24) -> List[Dict]:
+    def get_queries_not_updated(self, hours: int = 24) -> list[dict]:
         """Get queries that haven't been updated in the specified hours."""
         cursor = self.conn.cursor()
         cutoff_time = (datetime.now() - timedelta(hours=hours)).isoformat()
@@ -259,7 +258,7 @@ class FlexDatabase:
 
         return result
 
-    def get_query_with_last_request(self, query_id: str) -> Optional[Dict]:
+    def get_query_with_last_request(self, query_id: str) -> dict | None:
         """Get query info along with its latest request."""
         query_info = self.get_query_info(query_id)
         if not query_info:
@@ -271,7 +270,7 @@ class FlexDatabase:
 
         return query_info
 
-    def get_all_queries_with_status(self) -> List[Dict]:
+    def get_all_queries_with_status(self) -> list[dict]:
         """Get all queries with their latest request status."""
         cursor = self.conn.cursor()
         cursor.execute("SELECT id, name FROM queries ORDER BY added_on")
