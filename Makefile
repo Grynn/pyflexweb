@@ -1,4 +1,13 @@
-.PHONY: lint test build dev install bump-patch bump-minor bump-major release pre-commit-install pre-commit-run
+.PHONY: lint test build dev install bump-patch bump-minor bump-major release pre-commit-install pre-commit-run setup-repo
+
+# Initial repository setup
+setup-repo:
+	@echo "Setting up repository..."
+	@git add .
+	@git commit -m "Initial commit" || echo "No changes to commit"
+	@git branch -M main
+	@git push -u origin main
+	@echo "Repository setup completed successfully."
 
 lint:
 	@echo "Running pre-commit hooks..."
@@ -75,7 +84,9 @@ release: lint test build
 	@VERSION=$$(python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])"); \
 		echo "Preparing release for version $$VERSION"; \
 		git add pyproject.toml; \
-		git commit -m "Bump version to $$VERSION"; \
+		git commit -m "Bump version to $$VERSION" || echo "No changes to commit"; \
 		git tag -a "v$$VERSION" -m "Release version $$VERSION"; \
-		echo "Release $$VERSION created. Push with: git push origin main --tags"
+		git push origin main; \
+		git push origin "v$$VERSION"; \
+		gh release create "v$$VERSION" --title "v$$VERSION" --notes "Release version $$VERSION" --latest
 	@echo "Release completed successfully."
