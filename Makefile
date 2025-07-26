@@ -1,17 +1,8 @@
-.PHONY: lint test build dev install bump-patch bump-minor bump-major release pre-commit-install pre-commit-run setup-repo setup-pypi
+.PHONY: lint test build dev install bump-patch bump-minor bump-major release pre-commit-install pre-commit-run setup-repo setup-pypi check-clean
 
 # Show PyPI setup instructions
 setup-pypi:
 	@./scripts/setup-pypi.sh
-
-# Initial repository setup
-setup-repo:
-	@echo "Setting up repository..."
-	@git add .
-	@git commit -m "Initial commit" || echo "No changes to commit"
-	@git branch -M main
-	@git push -u origin main
-	@echo "Repository setup completed successfully."
 
 lint:
 	@echo "Running pre-commit hooks..."
@@ -48,6 +39,17 @@ install:
 	@uv tool install -U .
 	@echo "Package installed successfully."
 
+# Check for uncommitted changes (used by release)
+check-clean:
+	@echo "Checking for uncommitted changes..."
+	@if [ -n "$$(git status --porcelain)" ]; then \
+		echo "Error: There are uncommitted changes in the working tree:"; \
+		git status --short; \
+		echo "Please commit or stash your changes before creating a release."; \
+		exit 1; \
+	fi
+	@echo "Working tree is clean."
+
 # Version bumping targets
 bump-patch:
 	@echo "Bumping patch version..."
@@ -58,6 +60,7 @@ bump-patch:
 		config['project']['version'] = '.'.join(version); \
 		toml.dump(config, open('pyproject.toml', 'w'))"
 	@echo "Version bumped to: $$(python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])")"
+	uv sync --all-extras
 
 bump-minor:
 	@echo "Bumping minor version..."
@@ -69,6 +72,7 @@ bump-minor:
 		config['project']['version'] = '.'.join(version); \
 		toml.dump(config, open('pyproject.toml', 'w'))"
 	@echo "Version bumped to: $$(python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])")"
+	uv sync --all-extras
 
 bump-major:
 	@echo "Bumping major version..."
@@ -81,9 +85,10 @@ bump-major:
 		config['project']['version'] = '.'.join(version); \
 		toml.dump(config, open('pyproject.toml', 'w'))"
 	@echo "Version bumped to: $$(python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])")"
+	uv sync --all-extras
 
 # Release target
-release: lint test build
+release: check-clean lint test build
 	@echo "Creating release..."
 	@VERSION=$$(python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])"); \
 		echo "Preparing release for version $$VERSION"; \
