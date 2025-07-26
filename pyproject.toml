@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyflexweb"
-version = "0.1.1"
+version = "0.1.2"
 description = "Download IBKR Flex reports using the Interactive Brokers flex web service"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -33,24 +33,13 @@ packages = [ "pyflexweb",]
 line-length = 140
 target-version = "py312"
 
-[tool.ruff.lint]
-select = [
-    "E",  # pycodestyle errors
-    "W",  # pycodestyle warnings
-    "F",  # pyflakes
-    "I",  # isort
-    "B",  # flake8-bugbear
-    "C4", # flake8-comprehensions
-    "UP", # pyupgrade
-]
-ignore = [
-    "B008",  # do not perform function calls in argument defaults
-    "C901",  # too complex
-]
-
-[tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["F401"]
-"tests/*" = ["S101"]
-
 [tool.pytest]
 testpaths = [ "tests",]
+
+[tool.ruff.lint]
+select = [ "E", "W", "F", "I", "B", "C4", "UP",]
+ignore = [ "B008", "C901",]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = [ "F401",]
+"tests/*" = [ "S101",]
