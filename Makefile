@@ -1,4 +1,8 @@
-.PHONY: lint test build dev install bump-patch bump-minor bump-major release pre-commit-install pre-commit-run setup-repo
+.PHONY: lint test build dev install bump-patch bump-minor bump-major release pre-commit-install pre-commit-run setup-repo setup-pypi
+
+# Show PyPI setup instructions
+setup-pypi:
+	@./scripts/setup-pypi.sh
 
 # Initial repository setup
 setup-repo:

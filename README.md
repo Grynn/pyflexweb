@@ -220,6 +220,30 @@ make lint
 uv run pre-commit run --all-files
 ```
 
+### Releasing
+
+This project uses automated PyPI publishing via GitHub Actions. To create a release:
+
+```bash
+# Bump version (choose one)
+make bump-patch  # 0.1.1 -> 0.1.2
+make bump-minor  # 0.1.1 -> 0.2.0
+make bump-major  # 0.1.1 -> 1.0.0
+
+# Create GitHub release (automatically publishes to PyPI)
+make release
+```
+
+The release process will:
+
+1. Run linting and tests
+2. Build the package
+3. Create a git tag and commit
+4. Push to GitHub and create a release
+5. Automatically publish to PyPI via GitHub Actions
+
+For initial PyPI setup, run `make setup-pypi` for detailed instructions.
+
 ### Code Quality
 
 This project uses pre-commit hooks to ensure code quality:
