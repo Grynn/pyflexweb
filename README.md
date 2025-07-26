@@ -65,6 +65,8 @@ To see all your stored queries with their last download status:
 
 ```bash
 pyflexweb query
+# or
+pyflexweb status
 ```
 
 ### Downloading Reports
@@ -167,6 +169,7 @@ This project is licensed under the terms of the GNU General Public License v3.0 
 
 ### Report Operations
 
+- `status` - Show status of all stored queries (alias for `query list`)
 - `request <query_id>` - Request a report
 - `fetch <request_id> [--output filename.xml] [--poll-interval SECONDS] [--max-attempts NUM]` - Fetch a requested report
 - `download [--query QUERY_ID|all] [--output filename.xml] [--force] [--poll-interval SECONDS] [--max-attempts NUM]` - Download reports

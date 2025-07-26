@@ -171,6 +171,15 @@ def fetch(ctx, request_id, output, output_dir, poll_interval, max_attempts):
     return handle_fetch_command(args, ctx.obj["db"])
 
 
+# Report status command (alias for query list)
+@cli.command("status")
+@click.pass_context
+def status(ctx):
+    """Show status of all stored queries (alias for 'query list')."""
+    args = type("Args", (), {"subcommand": "list"})
+    return handle_query_command(args, ctx.obj["db"])
+
+
 # All-in-one download command
 @cli.command("download")
 @click.option("--query", default="all", help="The query ID to download a report for (default: all)")

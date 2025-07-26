@@ -129,6 +129,14 @@ class TestClickCli(unittest.TestCase):
         args = self.mock_query_handler.call_args[0][0]
         self.assertEqual(args.subcommand, "list")  # Default should be 'list'
 
+    def test_status_command(self):
+        """Test the status command (alias for query list)."""
+        result = self.runner.invoke(cli, ["status"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_query_handler.assert_called_once()
+        args = self.mock_query_handler.call_args[0][0]
+        self.assertEqual(args.subcommand, "list")  # Status should call query handler with 'list'
+
     def test_request_command(self):
         """Test the request command."""
         result = self.runner.invoke(cli, ["request", "123456"])
