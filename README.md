@@ -43,7 +43,7 @@ uv tool install -e . # or pip install -e .
 
 ### Basic Setup
 
-First, set up your IBKR Flex Web Service token:
+First, set up your IBKR Flex Web Service token (see [IBKR Flex Web Service token documentation](https://www.ibkrguides.com/clientportal/performanceandstatements/flex-web-service.htm) for token generation):
 
 ```bash
 pyflexweb token set YOUR_TOKEN_HERE
@@ -155,7 +155,7 @@ This project is licensed under the terms of the GNU General Public License v3.0 
 
 ### Token Management
 
-- `token set <token_value>` - Store your IBKR token
+- `token set <token_value>` - Store your IBKR token (see [IBKR Flex Web Service token documentation](https://www.ibkrguides.com/clientportal/performanceandstatements/flex-web-service.htm) for token generation)
 - `token get` - Display your stored token (masked for security)
 - `token unset` - Remove your stored token
 
@@ -181,7 +181,7 @@ Before using PyFlexWeb, you need to:
 1. Create a Flex Query in your IBKR Account Management portal
 2. Generate a Flex Web Service token
 
-For detailed instructions, see [IBKR's documentation](https://www.interactivebrokers.com/en/software/am/am/reports/flex_web_service_version_3.htm).
+For detailed instructions, see [IBKR Flex Web Service token documentation](https://www.ibkrguides.com/clientportal/performanceandstatements/flex-web-service.htm).
 
 ## Report Types
 
