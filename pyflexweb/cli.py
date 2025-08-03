@@ -10,6 +10,7 @@ import click
 
 from .database import FlexDatabase
 from .handlers import (
+    handle_config_command,
     handle_download_command,
     handle_fetch_command,
     handle_query_command,
@@ -24,21 +25,56 @@ def common_options(func):
     func = click.option("--output", help="Output filename (for single report downloads only)")(func)
     func = click.option(
         "--output-dir",
-        help="Directory to save reports (default: current directory)",
+        help="Directory to save reports",
     )(func)
     func = click.option(
         "--poll-interval",
         type=int,
-        default=30,
-        help="Seconds to wait between polling attempts (default: 30)",
+        help="Seconds to wait between polling attempts",
     )(func)
     func = click.option(
         "--max-attempts",
         type=int,
-        default=20,
-        help="Maximum number of polling attempts (default: 20)",
+        help="Maximum number of polling attempts",
     )(func)
     return func
+
+
+def get_effective_options(ctx, **provided_options):
+    """Get effective options by combining provided options with defaults from config."""
+    db = ctx.obj["db"]
+    effective = {}
+
+    # Define config keys and their CLI option names
+    config_mappings = {
+        "default_output_dir": "output_dir",
+        "default_poll_interval": "poll_interval",
+        "default_max_attempts": "max_attempts",
+    }
+
+    for config_key, option_name in config_mappings.items():
+        provided_value = provided_options.get(option_name)
+        if provided_value is not None:
+            effective[option_name] = provided_value
+        else:
+            # Get from config, with built-in defaults
+            if option_name == "poll_interval":
+                default_value = db.get_config(config_key, "30")
+                effective[option_name] = int(default_value)
+            elif option_name == "max_attempts":
+                default_value = db.get_config(config_key, "20")
+                effective[option_name] = int(default_value)
+            elif option_name == "output_dir":
+                effective[option_name] = db.get_config(config_key)
+            else:
+                effective[option_name] = provided_options.get(option_name)
+
+    # Keep other options as-is
+    for key, value in provided_options.items():
+        if key not in config_mappings.values():
+            effective[key] = value
+
+    return effective
 
 
 @click.group(invoke_without_command=True)
@@ -89,6 +125,56 @@ def token_unset(ctx):
     """Remove your stored token."""
     args = type("Args", (), {"subcommand": "unset"})
     return handle_token_command(args, ctx.obj["db"])
+
+
+# Config commands
+@cli.group()
+@click.pass_context
+def config(ctx):
+    """Manage default configuration settings."""
+    pass
+
+
+@config.command("set")
+@click.argument("key", type=click.Choice(["default_output_dir", "default_poll_interval", "default_max_attempts"]))
+@click.argument("value")
+@click.pass_context
+def config_set(ctx, key, value):
+    """Set a default configuration value.
+
+    Available keys:
+    - default_output_dir: Default directory for saving reports
+    - default_poll_interval: Default seconds between polling attempts
+    - default_max_attempts: Default maximum polling attempts
+    """
+    args = type("Args", (), {"subcommand": "set", "key": key, "value": value})
+    return handle_config_command(args, ctx.obj["db"])
+
+
+@config.command("get")
+@click.argument("key", required=False)
+@click.pass_context
+def config_get(ctx, key):
+    """Get configuration value(s)."""
+    args = type("Args", (), {"subcommand": "get", "key": key})
+    return handle_config_command(args, ctx.obj["db"])
+
+
+@config.command("unset")
+@click.argument("key")
+@click.pass_context
+def config_unset(ctx, key):
+    """Remove a configuration value."""
+    args = type("Args", (), {"subcommand": "unset", "key": key})
+    return handle_config_command(args, ctx.obj["db"])
+
+
+@config.command("list")
+@click.pass_context
+def config_list(ctx):
+    """List all configuration values."""
+    args = type("Args", (), {"subcommand": "list", "key": None})
+    return handle_config_command(args, ctx.obj["db"])
 
 
 # Query commands
@@ -157,17 +243,11 @@ def request(ctx, query_id):
 @click.pass_context
 def fetch(ctx, request_id, output, output_dir, poll_interval, max_attempts):
     """Fetch a requested report."""
-    args = type(
-        "Args",
-        (),
-        {
-            "request_id": request_id,
-            "output": output,
-            "output_dir": output_dir,
-            "poll_interval": poll_interval,
-            "max_attempts": max_attempts,
-        },
+    effective_options = get_effective_options(
+        ctx, request_id=request_id, output=output, output_dir=output_dir, poll_interval=poll_interval, max_attempts=max_attempts
     )
+
+    args = type("Args", (), effective_options)
     return handle_fetch_command(args, ctx.obj["db"])
 
 
@@ -191,18 +271,11 @@ def download(ctx, query, force, output, output_dir, poll_interval, max_attempts)
 
     If --query is not specified, downloads all queries not updated in 24 hours.
     """
-    args = type(
-        "Args",
-        (),
-        {
-            "query": query,
-            "force": force,
-            "output": output,
-            "output_dir": output_dir,
-            "poll_interval": poll_interval,
-            "max_attempts": max_attempts,
-        },
+    effective_options = get_effective_options(
+        ctx, query=query, force=force, output=output, output_dir=output_dir, poll_interval=poll_interval, max_attempts=max_attempts
     )
+
+    args = type("Args", (), effective_options)
     return handle_download_command(args, ctx.obj["db"])
 
 

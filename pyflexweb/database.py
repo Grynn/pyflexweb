@@ -140,6 +140,32 @@ class FlexDatabase:
         cursor.execute("DELETE FROM config WHERE key = ?", ("token",))
         self.conn.commit()
 
+    def set_config(self, key: str, value: str) -> None:
+        """Set a configuration value."""
+        cursor = self.conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, value))
+        self.conn.commit()
+
+    def get_config(self, key: str, default: str = None) -> str:
+        """Get a configuration value."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT value FROM config WHERE key = ?", (key,))
+        result = cursor.fetchone()
+        return result[0] if result else default
+
+    def list_config(self) -> dict:
+        """List all configuration values."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT key, value FROM config WHERE key != 'token' AND key != 'db_version' ORDER BY key")
+        return dict(cursor.fetchall())
+
+    def unset_config(self, key: str) -> bool:
+        """Remove a configuration value."""
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM config WHERE key = ?", (key,))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
     def add_query(self, query_id: str, name: str) -> None:
         cursor = self.conn.cursor()
         cursor.execute("INSERT OR REPLACE INTO queries (id, name) VALUES (?, ?)", (query_id, name))

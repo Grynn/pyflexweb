@@ -18,6 +18,13 @@ class TestClickCli(unittest.TestCase):
         self.mock_db = MagicMock()
         self.mock_db_class.return_value = self.mock_db
 
+        # Configure mock database to return default config values
+        def mock_get_config(key, default=None):
+            config_defaults = {"default_poll_interval": "30", "default_max_attempts": "20"}
+            return config_defaults.get(key, default)
+
+        self.mock_db.get_config.side_effect = mock_get_config
+
         # Set up patchers for handlers
         self.patchers = [
             patch("pyflexweb.cli.handle_token_command", return_value=0),
@@ -25,6 +32,7 @@ class TestClickCli(unittest.TestCase):
             patch("pyflexweb.cli.handle_request_command", return_value=0),
             patch("pyflexweb.cli.handle_fetch_command", return_value=0),
             patch("pyflexweb.cli.handle_download_command", return_value=0),
+            patch("pyflexweb.cli.handle_config_command", return_value=0),
         ]
 
         # Start all patchers and store mocks
@@ -36,6 +44,7 @@ class TestClickCli(unittest.TestCase):
         self.mock_request_handler = self.mocks[2]
         self.mock_fetch_handler = self.mocks[3]
         self.mock_download_handler = self.mocks[4]
+        self.mock_config_handler = self.mocks[5]
 
     def tearDown(self):
         self.mock_db_patcher.stop()
@@ -191,6 +200,43 @@ class TestClickCli(unittest.TestCase):
         self.assertEqual(args.max_attempts, 20)  # Default value
         self.assertIsNone(args.output)  # Default is None
         self.assertFalse(args.force)  # Default is False
+
+    def test_config_set_command(self):
+        """Test the config set command."""
+        result = self.runner.invoke(cli, ["config", "set", "default_poll_interval", "60"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_config_handler.assert_called_once()
+        args = self.mock_config_handler.call_args[0][0]
+        self.assertEqual(args.subcommand, "set")
+        self.assertEqual(args.key, "default_poll_interval")
+        self.assertEqual(args.value, "60")
+
+    def test_config_get_command(self):
+        """Test the config get command."""
+        result = self.runner.invoke(cli, ["config", "get", "default_poll_interval"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_config_handler.assert_called_once()
+        args = self.mock_config_handler.call_args[0][0]
+        self.assertEqual(args.subcommand, "get")
+        self.assertEqual(args.key, "default_poll_interval")
+
+    def test_config_list_command(self):
+        """Test the config list command."""
+        result = self.runner.invoke(cli, ["config", "list"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_config_handler.assert_called_once()
+        args = self.mock_config_handler.call_args[0][0]
+        self.assertEqual(args.subcommand, "list")
+        self.assertIsNone(args.key)
+
+    def test_config_unset_command(self):
+        """Test the config unset command."""
+        result = self.runner.invoke(cli, ["config", "unset", "default_poll_interval"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_config_handler.assert_called_once()
+        args = self.mock_config_handler.call_args[0][0]
+        self.assertEqual(args.subcommand, "unset")
+        self.assertEqual(args.key, "default_poll_interval")
 
 
 class TestMainFunction(unittest.TestCase):

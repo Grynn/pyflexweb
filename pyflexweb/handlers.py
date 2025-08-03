@@ -317,3 +317,53 @@ def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
         db.update_request_status(request_id, "completed", output_file)
 
     return 0 if overall_success else 1
+
+
+def handle_config_command(args: dict[str, Any], db: FlexDatabase) -> int:
+    """Handle the 'config' command and its subcommands."""
+    if args.subcommand == "set":
+        # Validate values
+        if args.key in ["default_poll_interval", "default_max_attempts"]:
+            try:
+                int(args.value)
+            except ValueError:
+                print(f"Error: {args.key} must be a number")
+                return 1
+
+        db.set_config(args.key, args.value)
+        print(f"Set {args.key} = {args.value}")
+        return 0
+    elif args.subcommand == "get":
+        if args.key:
+            value = db.get_config(args.key)
+            if value is not None:
+                print(f"{args.key} = {value}")
+            else:
+                print(f"{args.key} is not set")
+        else:
+            # List all config
+            config_dict = db.list_config()
+            if config_dict:
+                for k, v in config_dict.items():
+                    print(f"{k} = {v}")
+            else:
+                print("No configuration values set")
+        return 0
+    elif args.subcommand == "unset":
+        if db.unset_config(args.key):
+            print(f"Unset {args.key}")
+        else:
+            print(f"{args.key} was not set")
+        return 0
+    elif args.subcommand == "list":
+        # Same as get without key
+        config_dict = db.list_config()
+        if config_dict:
+            for k, v in config_dict.items():
+                print(f"{k} = {v}")
+        else:
+            print("No configuration values set")
+        return 0
+    else:
+        print("Missing subcommand. Use 'set', 'get', 'unset', or 'list'.")
+        return 1

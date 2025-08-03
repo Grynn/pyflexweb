@@ -248,6 +248,35 @@ class TestFlexDatabase(unittest.TestCase):
             cursor = self.db.conn.cursor()
             cursor.execute("SELECT 1")
 
+    def test_config_operations(self):
+        """Test config operations (set, get, unset, list)."""
+        # Test set and get
+        self.db.set_config("test_key", "test_value")
+        self.assertEqual(self.db.get_config("test_key"), "test_value")
+
+        # Test get with default
+        self.assertEqual(self.db.get_config("nonexistent_key", "default"), "default")
+        self.assertIsNone(self.db.get_config("nonexistent_key"))
+
+        # Test set multiple values
+        self.db.set_config("default_poll_interval", "60")
+        self.db.set_config("default_max_attempts", "15")
+
+        # Test list_config
+        config_dict = self.db.list_config()
+        expected_dict = {"test_key": "test_value", "default_poll_interval": "60", "default_max_attempts": "15"}
+        self.assertEqual(config_dict, expected_dict)
+
+        # Test unset
+        self.assertTrue(self.db.unset_config("test_key"))
+        self.assertIsNone(self.db.get_config("test_key"))
+        self.assertFalse(self.db.unset_config("test_key"))  # Should return False for non-existent key
+
+        # Verify list_config excludes unset key
+        config_dict = self.db.list_config()
+        self.assertNotIn("test_key", config_dict)
+        self.assertIn("default_poll_interval", config_dict)
+
 
 if __name__ == "__main__":
     unittest.main()

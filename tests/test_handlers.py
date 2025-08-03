@@ -5,6 +5,7 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 from pyflexweb.handlers import (
+    handle_config_command,
     handle_download_command,
     handle_fetch_command,
     handle_query_command,
@@ -500,6 +501,130 @@ class TestDownloadHandler(unittest.TestCase):
 
             # Should update request status to completed
             self.mock_db.update_request_status.assert_called_once_with("REQ123", "completed", "./forced_download.xml")
+
+
+class TestConfigHandler(unittest.TestCase):
+    """Test the config command handler."""
+
+    def setUp(self):
+        self.mock_db = MagicMock()
+
+    def test_config_set_string_value(self):
+        """Test setting a string config value."""
+        args = MagicMock(subcommand="set", key="default_output_dir", value="/path/to/reports")
+
+        with patch("builtins.print") as mock_print:
+            result = handle_config_command(args, self.mock_db)
+            self.assertEqual(result, 0)
+            self.mock_db.set_config.assert_called_once_with("default_output_dir", "/path/to/reports")
+            mock_print.assert_called_once_with("Set default_output_dir = /path/to/reports")
+
+    def test_config_set_numeric_value(self):
+        """Test setting a numeric config value."""
+        args = MagicMock(subcommand="set", key="default_poll_interval", value="60")
+
+        with patch("builtins.print") as mock_print:
+            result = handle_config_command(args, self.mock_db)
+            self.assertEqual(result, 0)
+            self.mock_db.set_config.assert_called_once_with("default_poll_interval", "60")
+            mock_print.assert_called_once_with("Set default_poll_interval = 60")
+
+    def test_config_set_invalid_numeric_value(self):
+        """Test setting an invalid numeric config value."""
+        args = MagicMock(subcommand="set", key="default_poll_interval", value="not_a_number")
+
+        with patch("builtins.print") as mock_print:
+            result = handle_config_command(args, self.mock_db)
+            self.assertEqual(result, 1)
+            self.mock_db.set_config.assert_not_called()
+            mock_print.assert_called_once_with("Error: default_poll_interval must be a number")
+
+    def test_config_get_existing_key(self):
+        """Test getting an existing config value."""
+        args = MagicMock(subcommand="get", key="default_poll_interval")
+        self.mock_db.get_config.return_value = "60"
+
+        with patch("builtins.print") as mock_print:
+            result = handle_config_command(args, self.mock_db)
+            self.assertEqual(result, 0)
+            self.mock_db.get_config.assert_called_once_with("default_poll_interval")
+            mock_print.assert_called_once_with("default_poll_interval = 60")
+
+    def test_config_get_nonexistent_key(self):
+        """Test getting a non-existent config value."""
+        args = MagicMock(subcommand="get", key="nonexistent_key")
+        self.mock_db.get_config.return_value = None
+
+        with patch("builtins.print") as mock_print:
+            result = handle_config_command(args, self.mock_db)
+            self.assertEqual(result, 0)
+            self.mock_db.get_config.assert_called_once_with("nonexistent_key")
+            mock_print.assert_called_once_with("nonexistent_key is not set")
+
+    def test_config_get_all_values(self):
+        """Test getting all config values."""
+        args = MagicMock(subcommand="get", key=None)
+        self.mock_db.list_config.return_value = {"default_poll_interval": "60", "default_output_dir": "/path/to/reports"}
+
+        with patch("builtins.print") as mock_print:
+            result = handle_config_command(args, self.mock_db)
+            self.assertEqual(result, 0)
+            self.mock_db.list_config.assert_called_once()
+            # Check that both values were printed
+            self.assertEqual(mock_print.call_count, 2)
+
+    def test_config_get_all_values_empty(self):
+        """Test getting all config values when none exist."""
+        args = MagicMock(subcommand="get", key=None)
+        self.mock_db.list_config.return_value = {}
+
+        with patch("builtins.print") as mock_print:
+            result = handle_config_command(args, self.mock_db)
+            self.assertEqual(result, 0)
+            self.mock_db.list_config.assert_called_once()
+            mock_print.assert_called_once_with("No configuration values set")
+
+    def test_config_unset_existing_key(self):
+        """Test unsetting an existing config value."""
+        args = MagicMock(subcommand="unset", key="default_poll_interval")
+        self.mock_db.unset_config.return_value = True
+
+        with patch("builtins.print") as mock_print:
+            result = handle_config_command(args, self.mock_db)
+            self.assertEqual(result, 0)
+            self.mock_db.unset_config.assert_called_once_with("default_poll_interval")
+            mock_print.assert_called_once_with("Unset default_poll_interval")
+
+    def test_config_unset_nonexistent_key(self):
+        """Test unsetting a non-existent config value."""
+        args = MagicMock(subcommand="unset", key="nonexistent_key")
+        self.mock_db.unset_config.return_value = False
+
+        with patch("builtins.print") as mock_print:
+            result = handle_config_command(args, self.mock_db)
+            self.assertEqual(result, 0)
+            self.mock_db.unset_config.assert_called_once_with("nonexistent_key")
+            mock_print.assert_called_once_with("nonexistent_key was not set")
+
+    def test_config_list_command(self):
+        """Test the list subcommand."""
+        args = MagicMock(subcommand="list", key=None)
+        self.mock_db.list_config.return_value = {"default_poll_interval": "60", "default_max_attempts": "15"}
+
+        with patch("builtins.print") as mock_print:
+            result = handle_config_command(args, self.mock_db)
+            self.assertEqual(result, 0)
+            self.mock_db.list_config.assert_called_once()
+            self.assertEqual(mock_print.call_count, 2)
+
+    def test_config_invalid_subcommand(self):
+        """Test an invalid subcommand."""
+        args = MagicMock(subcommand="invalid")
+
+        with patch("builtins.print") as mock_print:
+            result = handle_config_command(args, self.mock_db)
+            self.assertEqual(result, 1)
+            mock_print.assert_called_once_with("Missing subcommand. Use 'set', 'get', 'unset', or 'list'.")
 
 
 if __name__ == "__main__":
