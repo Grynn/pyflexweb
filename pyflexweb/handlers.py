@@ -18,9 +18,7 @@ def handle_token_command(args: dict[str, Any], db: FlexDatabase) -> int:
     elif args.subcommand == "get":
         token = db.get_token()
         if token:
-            # Only show first/last 4 chars for security
-            masked = f"{token[:4]}...{token[-4:]}"
-            print(f"Stored token: {masked}")
+            print(f"Stored token: {token}")
         else:
             print("No token found. Set one with 'pyflexweb token set <token>'")
             return 1

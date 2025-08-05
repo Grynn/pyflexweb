@@ -39,8 +39,8 @@ class TestTokenHandler(unittest.TestCase):
             result = handle_token_command(args, self.mock_db)
             self.assertEqual(result, 0)
             self.mock_db.get_token.assert_called_once()
-            # Check that mask was applied correctly (first/last 4 chars)
-            mock_print.assert_called_once_with("Stored token: test...alue")
+            # Check that full token is shown
+            mock_print.assert_called_once_with("Stored token: test_token_value")
 
     def test_token_get_not_found(self):
         """Test getting a token when none exists."""

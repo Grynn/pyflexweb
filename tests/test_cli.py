@@ -93,6 +93,14 @@ class TestClickCli(unittest.TestCase):
         args = self.mock_token_handler.call_args[0][0]
         self.assertEqual(args.subcommand, "unset")
 
+    def test_token_default_command(self):
+        """Test the token command without subcommand defaults to get."""
+        result = self.runner.invoke(cli, ["token"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_token_handler.assert_called_once()
+        args = self.mock_token_handler.call_args[0][0]
+        self.assertEqual(args.subcommand, "get")
+
     def test_query_add_command(self):
         """Test the query add command."""
         result = self.runner.invoke(cli, ["query", "add", "123456", "--name", "Test Query"])

@@ -95,11 +95,14 @@ def cli(ctx):
 
 
 # Token commands
-@cli.group()
+@cli.group(invoke_without_command=True)
 @click.pass_context
 def token(ctx):
     """Manage IBKR Flex token."""
-    pass
+    # Default to 'get' when no subcommand is provided
+    if ctx.invoked_subcommand is None:
+        args = type("Args", (), {"subcommand": "get"})
+        return handle_token_command(args, ctx.obj["db"])
 
 
 @token.command("set")
