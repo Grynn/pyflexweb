@@ -1,0 +1,34 @@
+{
+    "name": "Python Development Container",
+    "image": "mcr.microsoft.com/devcontainers/python:3.13",
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "python.defaultInterpreterPath": "/workspaces/pyflexweb/.venv/bin/python",
+                "[python]": {
+                    "editor.defaultFormatter": "charliermarsh.ruff"
+                },
+                "extensions": [
+                    "ms-python.python",
+                    "ms-python.vscode-pylance",
+                    "charliermarsh.ruff",
+                    "mstools-ai.jupyter"
+                ]
+            }
+        },
+        // Mount volumes
+        "mounts": [
+            // Mount a named volume for the virtual environment
+            "source=pyflexweb-venv,target=/workspaces/pyflexweb/.venv,type=volume"
+        ],
+        // Features to add to the dev container
+        "features": {
+            "ghcr.io/devcontainers/features/git:1": {}
+        },
+        // Use 'forwardPorts' to make a list of ports inside the container available locally.
+        // "forwardPorts": [],
+        // Use 'postCreateCommand' to run commands after the container is created.
+        "postCreateCommand": "pip install --upgrade pip && pip install -e .[dev]",
+        "remoteUser": "vscode"
+    }
+}
