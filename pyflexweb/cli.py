@@ -83,7 +83,10 @@ def get_effective_options(ctx, **provided_options):
 @click.version_option(package_name="pyflexweb")
 @click.pass_context
 def cli(ctx):
-    """Download IBKR Flex reports using the Interactive Brokers flex web service."""
+    """Download IBKR Flex reports using the Interactive Brokers flex web service.
+
+    Use 'pyflexweb config' to view/modify default settings.
+    """
     db = FlexDatabase()
     ctx.ensure_object(dict)
     ctx.obj["db"] = db
@@ -91,6 +94,9 @@ def cli(ctx):
     # If no command is provided, show help text
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
+        click.echo(f"\nDatabase directory: {db.db_dir}")
+        default_output_dir = str(platformdirs.user_data_path("pyflexweb"))
+        click.echo(f"Default output directory: {default_output_dir}")
         exit(1)
 
     return 0
@@ -133,11 +139,14 @@ def token_unset(ctx):
 
 
 # Config commands
-@cli.group()
+@cli.group(invoke_without_command=True)
 @click.pass_context
 def config(ctx):
     """Manage default configuration settings."""
-    pass
+    # If no subcommand is provided, show all config settings
+    if ctx.invoked_subcommand is None:
+        args = type("Args", (), {"subcommand": "list", "key": None})
+        return handle_config_command(args, ctx.obj["db"])
 
 
 @config.command("set")

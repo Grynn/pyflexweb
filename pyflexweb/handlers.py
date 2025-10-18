@@ -354,13 +354,34 @@ def handle_config_command(args: dict[str, Any], db: FlexDatabase) -> int:
             print(f"{args.key} was not set")
         return 0
     elif args.subcommand == "list":
-        # Same as get without key
-        config_dict = db.list_config()
-        if config_dict:
-            for k, v in config_dict.items():
-                print(f"{k} = {v}")
-        else:
-            print("No configuration values set")
+        # Show all possible config settings with defaults
+        import platformdirs
+
+        # Define all possible config keys with their defaults
+        config_defaults = {
+            "default_output_dir": str(platformdirs.user_data_path("pyflexweb")),
+            "default_poll_interval": "30",
+            "default_max_attempts": "20",
+        }
+
+        # Get current config
+        current_config = db.list_config()
+
+        print("Configuration settings:")
+        print("(* indicates non-default value)\n")
+
+        for key, default_value in sorted(config_defaults.items()):
+            current_value = current_config.get(key)
+            if current_value is not None and current_value != default_value:
+                # Non-default value set
+                print(f"* {key} = {current_value}")
+            elif current_value is not None:
+                # Set but matches default
+                print(f"  {key} = {current_value}")
+            else:
+                # Not set, show default
+                print(f"  {key} = {default_value} (default)")
+
         return 0
     else:
         print("Missing subcommand. Use 'set', 'get', 'unset', or 'list'.")
