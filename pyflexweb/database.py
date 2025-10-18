@@ -12,8 +12,8 @@ class FlexDatabase:
 
     DB_VERSION = 2  # Increment when schema changes
 
-    def __init__(self):
-        self.db_dir = platformdirs.user_data_dir("pyflexweb")
+    def __init__(self, db_dir: str = None):
+        self.db_dir = db_dir if db_dir is not None else platformdirs.user_data_dir("pyflexweb")
         os.makedirs(self.db_dir, exist_ok=True)
         self.db_path = os.path.join(self.db_dir, "status.db")
         self.conn = self._init_db()

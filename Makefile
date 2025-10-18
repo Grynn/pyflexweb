@@ -9,7 +9,7 @@ lint:
 	@echo "make pre-commit to run pre-commit hooks"
 
 pre-commit-install:
-	@echo "Installing pre-commit hooks..."
+	@uv sync --all-extras
 	@uv run pre-commit install
 	@echo "Pre-commit hooks installed successfully."
 
@@ -28,9 +28,7 @@ build:
 	@uv build
 	@echo "Build completed successfully."
 
-dev:
-	@echo "Setting up development environment..."
-	@uv sync --all-extras
+dev: pre-commit-install
 	@echo "Development environment ready."
 
 install:

@@ -7,6 +7,7 @@ This module provides the main entry point and argument parsing for the PyFlexWeb
 import sys
 
 import click
+import platformdirs
 
 from .database import FlexDatabase
 from .handlers import (
@@ -65,7 +66,8 @@ def get_effective_options(ctx, **provided_options):
                 default_value = db.get_config(config_key, "20")
                 effective[option_name] = int(default_value)
             elif option_name == "output_dir":
-                effective[option_name] = db.get_config(config_key)
+                default_output_dir = str(platformdirs.user_data_path("pyflexweb"))
+                effective[option_name] = db.get_config(config_key, default_output_dir)
             else:
                 effective[option_name] = provided_options.get(option_name)
 

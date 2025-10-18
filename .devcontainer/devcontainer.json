@@ -1,34 +1,36 @@
 {
     "name": "Python Development Container",
-    "image": "mcr.microsoft.com/devcontainers/python:3.13",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
     "customizations": {
         "vscode": {
             "settings": {
                 "python.defaultInterpreterPath": "/workspaces/pyflexweb/.venv/bin/python",
                 "[python]": {
                     "editor.defaultFormatter": "charliermarsh.ruff"
-                },
-                "extensions": [
-                    "ms-python.python",
-                    "ms-python.vscode-pylance",
-                    "charliermarsh.ruff",
-                    "mstools-ai.jupyter"
-                ]
-            }
-        },
-        // Mount volumes
-        "mounts": [
-            // Mount a named volume for the virtual environment
-            "source=pyflexweb-venv,target=/workspaces/pyflexweb/.venv,type=volume"
-        ],
-        // Features to add to the dev container
-        "features": {
-            "ghcr.io/devcontainers/features/git:1": {}
-        },
-        // Use 'forwardPorts' to make a list of ports inside the container available locally.
-        // "forwardPorts": [],
-        // Use 'postCreateCommand' to run commands after the container is created.
-        "postCreateCommand": "pip install --upgrade pip && pip install -e .[dev]",
-        "remoteUser": "vscode"
-    }
+                }
+            },
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "charliermarsh.ruff",
+                "mstools-ai.jupyter"
+            ]
+        }
+    },
+    // Mount volumes
+    "mounts": [
+        // Mount a named volume for the virtual environment
+        "source=pyflexweb-venv,target=/workspaces/pyflexweb/.venv,type=volume"
+    ],
+    // Note: uv and git are installed in the Dockerfile so we don't rely on remote features.
+    // Use 'forwardPorts' to make a list of ports inside the container available locally.
+    // "forwardPorts": [],
+    // Fix permissions on the venv volume before running postCreateCommand
+    "onCreateCommand": "sudo chown -R vscode:vscode /workspaces/pyflexweb/.venv || true",
+    // Use 'postCreateCommand' to run commands after the container is created.
+    "postCreateCommand": "uv pip install -e '.[dev]' && make dev",
+    "remoteUser": "vscode"
 }

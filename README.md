@@ -18,10 +18,10 @@ A command-line tool for downloading IBKR Flex reports using the Interactive Brok
 
 ## Installation
 
-Install from PyPI:
+Install:
 
 ```bash
-# Using uv (recommended)
+# Install via uv (recommended)
 uv tool install pyflexweb
 
 # Or using pip
