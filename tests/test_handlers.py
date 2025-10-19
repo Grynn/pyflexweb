@@ -615,7 +615,13 @@ class TestConfigHandler(unittest.TestCase):
             result = handle_config_command(args, self.mock_db)
             self.assertEqual(result, 0)
             self.mock_db.list_config.assert_called_once()
-            self.assertEqual(mock_print.call_count, 2)
+            # The new behavior shows header, note, and all possible config settings
+            # Should print: header, note with newline, and 3 config settings (max_attempts, output_dir, poll_interval)
+            self.assertGreaterEqual(mock_print.call_count, 5)
+            # Verify header and asterisk note are printed
+            call_args = [str(call[0][0]) for call in mock_print.call_args_list]
+            self.assertIn("Configuration settings:", call_args)
+            self.assertTrue(any("* indicates non-default value" in arg for arg in call_args))
 
     def test_config_invalid_subcommand(self):
         """Test an invalid subcommand."""
