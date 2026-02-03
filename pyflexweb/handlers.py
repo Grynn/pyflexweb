@@ -197,12 +197,21 @@ def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
 
     # Determine which queries to download
     if args.query == "all":
-        # Download all queries that haven't been updated in the last 24 hours
-        queries_to_download = db.get_queries_not_updated(hours=24)
-        if not queries_to_download:
-            print("All queries have been updated within the last 24 hours.")
-            return 0
-        print(f"Found {len(queries_to_download)} queries that need updating")
+        if args.force:
+            # Force download all queries
+            queries_to_download = db.get_all_queries_with_status()
+            if not queries_to_download:
+                print("No queries found. Add one with 'pyflexweb query add <query_id> --name \"Query name\"'")
+                return 0
+            print(f"Force downloading all {len(queries_to_download)} queries")
+        else:
+            # Download all queries that haven't been updated in the last 24 hours
+            queries_to_download = db.get_queries_not_updated(hours=24)
+            if not queries_to_download:
+                print("All queries have been updated within the last 24 hours.")
+                print("Use --force to download anyway.")
+                return 0
+            print(f"Found {len(queries_to_download)} queries that need updating")
     else:
         # Download a specific query
         query_info = db.get_query_info(args.query)

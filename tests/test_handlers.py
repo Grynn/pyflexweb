@@ -411,7 +411,7 @@ class TestDownloadHandler(unittest.TestCase):
 
     def test_download_all_queries_up_to_date(self):
         """Test download all when all queries are up to date."""
-        args = MagicMock(query="all", output=None, output_dir=None)
+        args = MagicMock(query="all", force=False, output=None, output_dir=None)
         self.mock_db.get_token.return_value = "test_token"
         self.mock_db.get_queries_not_updated.return_value = []
 
@@ -420,7 +420,8 @@ class TestDownloadHandler(unittest.TestCase):
             self.assertEqual(result, 0)
             self.mock_db.get_token.assert_called_once()
             self.mock_db.get_queries_not_updated.assert_called_once_with(hours=24)
-            mock_print.assert_called_once_with("All queries have been updated within the last 24 hours.")
+            mock_print.assert_any_call("All queries have been updated within the last 24 hours.")
+            mock_print.assert_any_call("Use --force to download anyway.")
 
     def test_download_specific_query_not_found(self):
         """Test download specific query that doesn't exist."""
