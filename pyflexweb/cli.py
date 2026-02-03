@@ -193,12 +193,13 @@ def config_list(ctx):
 
 # Query commands
 @cli.group(invoke_without_command=True)
+@click.option("--json", "json_output", is_flag=True, help="Output in JSON format")
 @click.pass_context
-def query(ctx):
+def query(ctx, json_output):
     """Manage Flex query IDs."""
     if ctx.invoked_subcommand is None:
         # Default to 'list' if no subcommand is provided
-        args = type("Args", (), {"subcommand": "list"})
+        args = type("Args", (), {"subcommand": "list", "json_output": json_output})
         return handle_query_command(args, ctx.obj["db"])
     return 0
 
@@ -233,10 +234,11 @@ def query_rename(ctx, query_id, name):
 
 
 @query.command("list")
+@click.option("--json", "json_output", is_flag=True, help="Output in JSON format")
 @click.pass_context
-def query_list(ctx):
+def query_list(ctx, json_output):
     """List all stored query IDs."""
-    args = type("Args", (), {"subcommand": "list"})
+    args = type("Args", (), {"subcommand": "list", "json_output": json_output})
     return handle_query_command(args, ctx.obj["db"])
 
 

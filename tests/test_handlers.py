@@ -149,7 +149,7 @@ class TestQueryHandler(unittest.TestCase):
 
     def test_query_list_with_queries(self):
         """Test listing queries when some exist."""
-        args = MagicMock(subcommand="list")
+        args = MagicMock(subcommand="list", json_output=False)
         query1 = {
             "id": "123456",
             "name": "Test Query",
@@ -171,7 +171,7 @@ class TestQueryHandler(unittest.TestCase):
 
     def test_query_list_no_queries(self):
         """Test listing queries when none exist."""
-        args = MagicMock(subcommand="list")
+        args = MagicMock(subcommand="list", json_output=False)
         self.mock_db.get_all_queries_with_status.return_value = []
 
         with patch("builtins.print") as mock_print:

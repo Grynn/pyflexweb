@@ -1,5 +1,6 @@
 """Command handlers for CLI commands."""
 
+import json
 import os
 import time
 from datetime import datetime
@@ -54,8 +55,32 @@ def handle_query_command(args: dict[str, Any], db: FlexDatabase) -> int:
         return 0
     elif args.subcommand == "list":
         queries = db.get_all_queries_with_status()
+        json_output = getattr(args, "json_output", False)
+
         if not queries:
-            print("No query IDs found. Add one with 'pyflexweb query add <query_id> --name \"Query name\"'")
+            if json_output:
+                print("[]")
+            else:
+                print("No query IDs found. Add one with 'pyflexweb query add <query_id> --name \"Query name\"'")
+            return 0
+
+        if json_output:
+            # Build JSON output
+            output = []
+            for query in queries:
+                item = {
+                    "id": query["id"],
+                    "name": query["name"],
+                    "last_request": None,
+                    "status": None,
+                }
+                if query["latest_request"]:
+                    req = query["latest_request"]
+                    item["last_request"] = req["completed_at"] or req["requested_at"]
+                    item["status"] = req["status"]
+                    item["output_path"] = req.get("output_path")
+                output.append(item)
+            print(json.dumps(output, indent=2))
             return 0
 
         # Print table header for extended view
