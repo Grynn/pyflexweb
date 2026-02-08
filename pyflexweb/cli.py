@@ -11,34 +11,12 @@ import platformdirs
 
 from .database import FlexDatabase
 from .handlers import (
+    VALID_QUERY_TYPES,
     handle_config_command,
     handle_download_command,
-    handle_fetch_command,
     handle_query_command,
-    handle_request_command,
     handle_token_command,
 )
-
-
-# Common options
-def common_options(func):
-    """Common options for commands that fetch reports."""
-    func = click.option("--output", help="Output filename (for single report downloads only)")(func)
-    func = click.option(
-        "--output-dir",
-        help="Directory to save reports",
-    )(func)
-    func = click.option(
-        "--poll-interval",
-        type=int,
-        help="Seconds to wait between polling attempts",
-    )(func)
-    func = click.option(
-        "--max-attempts",
-        type=int,
-        help="Maximum number of polling attempts",
-    )(func)
-    return func
 
 
 def get_effective_options(ctx, **provided_options):
@@ -46,7 +24,6 @@ def get_effective_options(ctx, **provided_options):
     db = ctx.obj["db"]
     effective = {}
 
-    # Define config keys and their CLI option names
     config_mappings = {
         "default_output_dir": "output_dir",
         "default_poll_interval": "poll_interval",
@@ -57,19 +34,13 @@ def get_effective_options(ctx, **provided_options):
         provided_value = provided_options.get(option_name)
         if provided_value is not None:
             effective[option_name] = provided_value
-        else:
-            # Get from config, with built-in defaults
-            if option_name == "poll_interval":
-                default_value = db.get_config(config_key, "30")
-                effective[option_name] = int(default_value)
-            elif option_name == "max_attempts":
-                default_value = db.get_config(config_key, "20")
-                effective[option_name] = int(default_value)
-            elif option_name == "output_dir":
-                default_output_dir = str(platformdirs.user_data_path("pyflexweb"))
-                effective[option_name] = db.get_config(config_key, default_output_dir)
-            else:
-                effective[option_name] = provided_options.get(option_name)
+        elif option_name == "poll_interval":
+            effective[option_name] = int(db.get_config(config_key, "30"))
+        elif option_name == "max_attempts":
+            effective[option_name] = int(db.get_config(config_key, "20"))
+        elif option_name == "output_dir":
+            default_output_dir = str(platformdirs.user_data_path("pyflexweb"))
+            effective[option_name] = db.get_config(config_key, default_output_dir)
 
     # Keep other options as-is
     for key, value in provided_options.items():
@@ -91,7 +62,6 @@ def cli(ctx):
     ctx.ensure_object(dict)
     ctx.obj["db"] = db
 
-    # If no command is provided, show help text
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
         click.echo(f"\nDatabase directory: {db.db_dir}")
@@ -102,12 +72,13 @@ def cli(ctx):
     return 0
 
 
-# Token commands
+# --- Token commands ---
+
+
 @cli.group(invoke_without_command=True)
 @click.pass_context
 def token(ctx):
     """Manage IBKR Flex token."""
-    # Default to 'get' when no subcommand is provided
     if ctx.invoked_subcommand is None:
         args = type("Args", (), {"subcommand": "get"})
         return handle_token_command(args, ctx.obj["db"])
@@ -138,12 +109,13 @@ def token_unset(ctx):
     return handle_token_command(args, ctx.obj["db"])
 
 
-# Config commands
+# --- Config commands ---
+
+
 @cli.group(invoke_without_command=True)
 @click.pass_context
 def config(ctx):
     """Manage default configuration settings."""
-    # If no subcommand is provided, show all config settings
     if ctx.invoked_subcommand is None:
         args = type("Args", (), {"subcommand": "list", "key": None})
         return handle_config_command(args, ctx.obj["db"])
@@ -191,14 +163,15 @@ def config_list(ctx):
     return handle_config_command(args, ctx.obj["db"])
 
 
-# Query commands
+# --- Query commands ---
+
+
 @cli.group(invoke_without_command=True)
 @click.option("--json", "json_output", is_flag=True, help="Output in JSON format")
 @click.pass_context
 def query(ctx, json_output):
     """Manage Flex query IDs."""
     if ctx.invoked_subcommand is None:
-        # Default to 'list' if no subcommand is provided
         args = type("Args", (), {"subcommand": "list", "json_output": json_output})
         return handle_query_command(args, ctx.obj["db"])
     return 0
@@ -207,10 +180,14 @@ def query(ctx, json_output):
 @query.command("add")
 @click.argument("query_id")
 @click.option("--name", required=True, help="A descriptive name for the query")
+@click.option("--type", "query_type", type=click.Choice(VALID_QUERY_TYPES), default="activity", help="Query type (default: activity)")
+@click.option("--min-interval", type=int, default=None, help="Min hours between downloads (overrides type default)")
 @click.pass_context
-def query_add(ctx, query_id, name):
+def query_add(ctx, query_id, name, query_type, min_interval):
     """Add a new query ID."""
-    args = type("Args", (), {"subcommand": "add", "query_id": query_id, "name": name})
+    args = type(
+        "Args", (), {"subcommand": "add", "query_id": query_id, "name": name, "query_type": query_type, "min_interval": min_interval}
+    )
     return handle_query_command(args, ctx.obj["db"])
 
 
@@ -233,6 +210,35 @@ def query_rename(ctx, query_id, name):
     return handle_query_command(args, ctx.obj["db"])
 
 
+@query.command("interval")
+@click.argument("query_id")
+@click.argument("hours", type=int, required=False)
+@click.option("--unset", is_flag=True, help="Remove per-query interval override (use type default)")
+@click.pass_context
+def query_interval(ctx, query_id, hours, unset):
+    """Set the minimum download interval (hours) for a query.
+
+    Examples:
+
+      pyflexweb query interval 12345 12    # set to 12 hours
+
+      pyflexweb query interval 12345 --unset  # revert to type default
+    """
+    if not unset and hours is None:
+        query_info = ctx.obj["db"].get_query_info(query_id)
+        if not query_info:
+            print(f"Query ID {query_id} not found.")
+            return 1
+        interval = query_info.get("min_interval")
+        if interval is not None:
+            print(f"Query {query_id} min interval: {interval}h")
+        else:
+            print(f"Query {query_id} uses the type default interval.")
+        return 0
+    args = type("Args", (), {"subcommand": "interval", "query_id": query_id, "hours": hours, "unset": unset})
+    return handle_query_command(args, ctx.obj["db"])
+
+
 @query.command("list")
 @click.option("--json", "json_output", is_flag=True, help="Output in JSON format")
 @click.pass_context
@@ -242,50 +248,23 @@ def query_list(ctx, json_output):
     return handle_query_command(args, ctx.obj["db"])
 
 
-# Report request command
-@cli.command("request")
-@click.argument("query_id")
-@click.pass_context
-def request(ctx, query_id):
-    """Request a Flex report."""
-    args = type("Args", (), {"query_id": query_id})
-    return handle_request_command(args, ctx.obj["db"])
+# --- Download command ---
 
 
-# Report fetch command
-@cli.command("fetch")
-@click.argument("request_id")
-@common_options
-@click.pass_context
-def fetch(ctx, request_id, output, output_dir, poll_interval, max_attempts):
-    """Fetch a requested report."""
-    effective_options = get_effective_options(
-        ctx, request_id=request_id, output=output, output_dir=output_dir, poll_interval=poll_interval, max_attempts=max_attempts
-    )
-
-    args = type("Args", (), effective_options)
-    return handle_fetch_command(args, ctx.obj["db"])
-
-
-# Report status command (alias for query list)
-@cli.command("status")
-@click.pass_context
-def status(ctx):
-    """Show status of all stored queries (alias for 'query list')."""
-    args = type("Args", (), {"subcommand": "list"})
-    return handle_query_command(args, ctx.obj["db"])
-
-
-# All-in-one download command
 @cli.command("download")
 @click.option("--query", default="all", help="The query ID to download a report for (default: all)")
-@click.option("--force", is_flag=True, help="Force download even if report was already downloaded today")
-@common_options
+@click.option("--force", is_flag=True, help="Force download even if recently downloaded")
+@click.option("--output", help="Output filename (for single report downloads only)")
+@click.option("--output-dir", help="Directory to save reports")
+@click.option("--poll-interval", type=int, help="Seconds to wait between polling attempts")
+@click.option("--max-attempts", type=int, help="Maximum number of polling attempts")
 @click.pass_context
 def download(ctx, query, force, output, output_dir, poll_interval, max_attempts):
-    """Request and download a report in one step.
+    """Download Flex reports.
 
-    If --query is not specified, downloads all queries not updated in 24 hours.
+    If --query is not specified, downloads all queries that are due based on their
+    type interval (activity: 6h, trade-confirmation: 1h). Per-query intervals can
+    be set with 'query interval <id> <hours>'.
     """
     effective_options = get_effective_options(
         ctx, query=query, force=force, output=output, output_dir=output_dir, poll_interval=poll_interval, max_attempts=max_attempts
@@ -293,6 +272,17 @@ def download(ctx, query, force, output, output_dir, poll_interval, max_attempts)
 
     args = type("Args", (), effective_options)
     return handle_download_command(args, ctx.obj["db"])
+
+
+# --- Status command (convenience alias) ---
+
+
+@cli.command("status")
+@click.pass_context
+def status(ctx):
+    """Show status of all stored queries (alias for 'query list')."""
+    args = type("Args", (), {"subcommand": "list"})
+    return handle_query_command(args, ctx.obj["db"])
 
 
 def main():
@@ -303,7 +293,6 @@ def main():
         click.echo(f"Error: {e}", err=True)
         return 1
     finally:
-        # No need to close db here as it's managed within the cli context
         pass
 
 

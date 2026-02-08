@@ -29,8 +29,6 @@ class TestClickCli(unittest.TestCase):
         self.patchers = [
             patch("pyflexweb.cli.handle_token_command", return_value=0),
             patch("pyflexweb.cli.handle_query_command", return_value=0),
-            patch("pyflexweb.cli.handle_request_command", return_value=0),
-            patch("pyflexweb.cli.handle_fetch_command", return_value=0),
             patch("pyflexweb.cli.handle_download_command", return_value=0),
             patch("pyflexweb.cli.handle_config_command", return_value=0),
         ]
@@ -41,10 +39,8 @@ class TestClickCli(unittest.TestCase):
         # Name the mocks for convenience
         self.mock_token_handler = self.mocks[0]
         self.mock_query_handler = self.mocks[1]
-        self.mock_request_handler = self.mocks[2]
-        self.mock_fetch_handler = self.mocks[3]
-        self.mock_download_handler = self.mocks[4]
-        self.mock_config_handler = self.mocks[5]
+        self.mock_download_handler = self.mocks[2]
+        self.mock_config_handler = self.mocks[3]
 
     def tearDown(self):
         self.mock_db_patcher.stop()
@@ -110,6 +106,25 @@ class TestClickCli(unittest.TestCase):
         self.assertEqual(args.subcommand, "add")
         self.assertEqual(args.query_id, "123456")
         self.assertEqual(args.name, "Test Query")
+        self.assertEqual(args.query_type, "activity")  # default type
+
+    def test_query_add_trade_confirmation(self):
+        """Test the query add command with trade-confirmation type."""
+        result = self.runner.invoke(cli, ["query", "add", "789", "--name", "Trade", "--type", "trade-confirmation"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_query_handler.assert_called_once()
+        args = self.mock_query_handler.call_args[0][0]
+        self.assertEqual(args.subcommand, "add")
+        self.assertEqual(args.query_id, "789")
+        self.assertEqual(args.query_type, "trade-confirmation")
+
+    def test_query_add_with_min_interval(self):
+        """Test the query add command with custom min interval."""
+        result = self.runner.invoke(cli, ["query", "add", "123", "--name", "Custom", "--min-interval", "12"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_query_handler.assert_called_once()
+        args = self.mock_query_handler.call_args[0][0]
+        self.assertEqual(args.min_interval, 12)
 
     def test_query_remove_command(self):
         """Test the query remove command."""
@@ -138,6 +153,15 @@ class TestClickCli(unittest.TestCase):
         args = self.mock_query_handler.call_args[0][0]
         self.assertEqual(args.subcommand, "list")
 
+    def test_query_list_json(self):
+        """Test the query list command with --json flag."""
+        result = self.runner.invoke(cli, ["query", "list", "--json"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_query_handler.assert_called_once()
+        args = self.mock_query_handler.call_args[0][0]
+        self.assertEqual(args.subcommand, "list")
+        self.assertTrue(args.json_output)
+
     def test_query_default_command(self):
         """Test the query command with no subcommand."""
         result = self.runner.invoke(cli, ["query"])
@@ -153,35 +177,6 @@ class TestClickCli(unittest.TestCase):
         self.mock_query_handler.assert_called_once()
         args = self.mock_query_handler.call_args[0][0]
         self.assertEqual(args.subcommand, "list")  # Status should call query handler with 'list'
-
-    def test_request_command(self):
-        """Test the request command."""
-        result = self.runner.invoke(cli, ["request", "123456"])
-        self.assertEqual(result.exit_code, 0)
-        self.mock_request_handler.assert_called_once()
-        args = self.mock_request_handler.call_args[0][0]
-        self.assertEqual(args.query_id, "123456")
-
-    def test_fetch_command(self):
-        """Test the fetch command."""
-        result = self.runner.invoke(cli, ["fetch", "REQ123", "--output", "report.xml", "--poll-interval", "10", "--max-attempts", "30"])
-        self.assertEqual(result.exit_code, 0)
-        self.mock_fetch_handler.assert_called_once()
-        args = self.mock_fetch_handler.call_args[0][0]
-        self.assertEqual(args.request_id, "REQ123")
-        self.assertEqual(args.output, "report.xml")
-        self.assertEqual(args.poll_interval, 10)
-        self.assertEqual(args.max_attempts, 30)
-
-    def test_fetch_command_defaults(self):
-        """Test the fetch command with default values."""
-        result = self.runner.invoke(cli, ["fetch", "REQ123"])
-        self.assertEqual(result.exit_code, 0)
-        self.mock_fetch_handler.assert_called_once()
-        args = self.mock_fetch_handler.call_args[0][0]
-        self.assertEqual(args.poll_interval, 30)  # Default value
-        self.assertEqual(args.max_attempts, 20)  # Default value
-        self.assertIsNone(args.output)  # Default is None
 
     def test_download_command(self):
         """Test the download command with all options."""

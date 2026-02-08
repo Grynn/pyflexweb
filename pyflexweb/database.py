@@ -1,4 +1,4 @@
-"""Database module for storing tokens, queries, and request history."""
+"""Database module for storing tokens, queries, and download history."""
 
 import os
 import sqlite3
@@ -8,9 +8,9 @@ import platformdirs
 
 
 class FlexDatabase:
-    """Manages the local database for tokens, queries, and request history."""
+    """Manages the local database for tokens, queries, and download history."""
 
-    DB_VERSION = 2  # Increment when schema changes
+    DB_VERSION = 4  # Increment when schema changes
 
     def __init__(self, db_dir: str = None):
         self.db_dir = db_dir if db_dir is not None else platformdirs.user_data_dir("pyflexweb")
@@ -26,7 +26,6 @@ class FlexDatabase:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        # Create tables if they don't exist
         cursor.execute(
             """
         CREATE TABLE IF NOT EXISTS config (
@@ -61,47 +60,35 @@ class FlexDatabase:
         """
         )
 
-        # Check if migration needed
         self._check_migration(conn)
-
         return conn
 
     def _check_migration(self, conn: sqlite3.Connection) -> None:
         """Check if database needs migration and perform if needed."""
         cursor = conn.cursor()
 
-        # Get current database version
         cursor.execute("SELECT value FROM config WHERE key = 'db_version' LIMIT 1")
         result = cursor.fetchone()
         current_version = int(result[0]) if result else 0
 
-        # If already at current version, no migration needed
         if current_version >= self.DB_VERSION:
             return
 
-        # Perform migrations
         if current_version < 1:
-            # Add last_updated column to requests table
             try:
                 cursor.execute("ALTER TABLE requests ADD COLUMN last_updated DATETIME")
                 conn.commit()
             except sqlite3.OperationalError:
-                # Column might already exist
                 pass
 
         if current_version < 2:
-            # Remove report_type column from queries table
-            # First get all existing queries
             cursor.execute("PRAGMA table_info(queries)")
             columns = cursor.fetchall()
             has_report_type = any(col[1] == "report_type" for col in columns)
 
             if has_report_type:
-                # Get all existing data
                 cursor.execute("SELECT id, name FROM queries")
                 queries = cursor.fetchall()
-
-                # Drop and recreate the table
                 cursor.execute("DROP TABLE queries")
                 cursor.execute(
                     """
@@ -112,17 +99,30 @@ class FlexDatabase:
                 )
                 """
                 )
-
-                # Reinsert the data
                 for query_id, name in queries:
                     cursor.execute("INSERT INTO queries (id, name) VALUES (?, ?)", (query_id, name))
 
-        # Update the version
+        if current_version < 3:
+            try:
+                cursor.execute("ALTER TABLE queries ADD COLUMN min_interval INTEGER")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        if current_version < 4:
+            try:
+                cursor.execute("ALTER TABLE queries ADD COLUMN type TEXT DEFAULT 'activity'")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+
         cursor.execute(
             "INSERT OR REPLACE INTO config VALUES (?, ?)",
             ("db_version", str(self.DB_VERSION)),
         )
         conn.commit()
+
+    # --- Token ---
 
     def set_token(self, token: str) -> None:
         cursor = self.conn.cursor()
@@ -140,36 +140,46 @@ class FlexDatabase:
         cursor.execute("DELETE FROM config WHERE key = ?", ("token",))
         self.conn.commit()
 
+    # --- Config ---
+
     def set_config(self, key: str, value: str) -> None:
-        """Set a configuration value."""
         cursor = self.conn.cursor()
         cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, value))
         self.conn.commit()
 
     def get_config(self, key: str, default: str = None) -> str:
-        """Get a configuration value."""
         cursor = self.conn.cursor()
         cursor.execute("SELECT value FROM config WHERE key = ?", (key,))
         result = cursor.fetchone()
         return result[0] if result else default
 
     def list_config(self) -> dict:
-        """List all configuration values."""
         cursor = self.conn.cursor()
         cursor.execute("SELECT key, value FROM config WHERE key != 'token' AND key != 'db_version' ORDER BY key")
         return dict(cursor.fetchall())
 
     def unset_config(self, key: str) -> bool:
-        """Remove a configuration value."""
         cursor = self.conn.cursor()
         cursor.execute("DELETE FROM config WHERE key = ?", (key,))
         self.conn.commit()
         return cursor.rowcount > 0
 
-    def add_query(self, query_id: str, name: str) -> None:
+    # --- Queries ---
+
+    def add_query(self, query_id: str, name: str, query_type: str = "activity", min_interval: int | None = None) -> None:
         cursor = self.conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO queries (id, name) VALUES (?, ?)", (query_id, name))
+        cursor.execute(
+            "INSERT OR REPLACE INTO queries (id, name, type, min_interval) VALUES (?, ?, ?, ?)",
+            (query_id, name, query_type, min_interval),
+        )
         self.conn.commit()
+
+    def set_query_interval(self, query_id: str, min_interval: int | None) -> bool:
+        """Set the minimum download interval (hours) for a query. None to use type default."""
+        cursor = self.conn.cursor()
+        cursor.execute("UPDATE queries SET min_interval = ? WHERE id = ?", (min_interval, query_id))
+        self.conn.commit()
+        return cursor.rowcount > 0
 
     def remove_query(self, query_id: str) -> bool:
         cursor = self.conn.cursor()
@@ -188,6 +198,38 @@ class FlexDatabase:
         cursor.execute("SELECT id, name FROM queries ORDER BY added_on")
         return cursor.fetchall()
 
+    def get_query_info(self, query_id: str) -> dict | None:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, name, type, min_interval FROM queries WHERE id = ?", (query_id,))
+        result = cursor.fetchone()
+        if not result:
+            return None
+        return {"id": result[0], "name": result[1], "type": result[2] or "activity", "min_interval": result[3]}
+
+    def get_all_queries_with_status(self) -> list[dict]:
+        """Get all queries with their latest download status."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, name, type, min_interval FROM queries ORDER BY added_on")
+        queries = cursor.fetchall()
+
+        result = []
+        for query_id, name, query_type, min_interval in queries:
+            query_info = {
+                "id": query_id,
+                "name": name,
+                "type": query_type or "activity",
+                "min_interval": min_interval,
+                "latest_request": None,
+            }
+            latest = self.get_latest_request(query_id)
+            if latest:
+                query_info["latest_request"] = latest
+            result.append(query_info)
+
+        return result
+
+    # --- Download history (internal) ---
+
     def add_request(self, request_id: str, query_id: str) -> None:
         cursor = self.conn.cursor()
         cursor.execute(
@@ -199,7 +241,6 @@ class FlexDatabase:
     def update_request_status(self, request_id: str, status: str, output_path: str | None = None) -> None:
         cursor = self.conn.cursor()
         now = datetime.now().isoformat()
-
         if status == "completed":
             cursor.execute(
                 "UPDATE requests SET status = ?, completed_at = ?, output_path = ?, last_updated = ? WHERE request_id = ?",
@@ -221,7 +262,6 @@ class FlexDatabase:
         result = cursor.fetchone()
         if not result:
             return None
-
         return {
             "request_id": result[0],
             "query_id": result[1],
@@ -230,15 +270,6 @@ class FlexDatabase:
             "completed_at": result[4],
             "output_path": result[5],
         }
-
-    def get_query_info(self, query_id: str) -> dict | None:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT id, name FROM queries WHERE id = ?", (query_id,))
-        result = cursor.fetchone()
-        if not result:
-            return None
-
-        return {"id": result[0], "name": result[1]}
 
     def get_latest_request(self, query_id: str) -> dict | None:
         cursor = self.conn.cursor()
@@ -249,21 +280,23 @@ class FlexDatabase:
         result = cursor.fetchone()
         if not result:
             return None
-
         return self.get_request_info(result[0])
 
-    def get_queries_not_updated(self, hours: int = 24) -> list[dict]:
-        """Get queries that haven't been updated in the specified hours."""
-        cursor = self.conn.cursor()
-        cutoff_time = (datetime.now() - timedelta(hours=hours)).isoformat()
+    def get_queries_needing_download(self, type_defaults: dict[str, int]) -> list[dict]:
+        """Get queries that haven't been downloaded within their effective interval.
 
-        # Get all queries
-        cursor.execute("SELECT id, name FROM queries")
+        Resolution: per-query min_interval > type-based default from type_defaults.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, name, type, min_interval FROM queries")
         all_queries = cursor.fetchall()
 
         result = []
-        for query_id, name in all_queries:
-            # Check if this query has a successful request within the time period
+        for query_id, name, query_type, min_interval in all_queries:
+            query_type = query_type or "activity"
+            hours = min_interval if min_interval is not None else type_defaults.get(query_type, 6)
+            cutoff_time = (datetime.now() - timedelta(hours=hours)).isoformat()
+
             cursor.execute(
                 """
                 SELECT r.request_id FROM requests r
@@ -276,42 +309,8 @@ class FlexDatabase:
                 (query_id, cutoff_time, cutoff_time),
             )
 
-            recent_request = cursor.fetchone()
-
-            if not recent_request:
-                # No recent successful request, include this query
-                result.append({"id": query_id, "name": name})
-
-        return result
-
-    def get_query_with_last_request(self, query_id: str) -> dict | None:
-        """Get query info along with its latest request."""
-        query_info = self.get_query_info(query_id)
-        if not query_info:
-            return None
-
-        latest_request = self.get_latest_request(query_id)
-        if latest_request:
-            query_info["latest_request"] = latest_request
-
-        return query_info
-
-    def get_all_queries_with_status(self) -> list[dict]:
-        """Get all queries with their latest request status."""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT id, name FROM queries ORDER BY added_on")
-        queries = cursor.fetchall()
-
-        result = []
-        for query_id, name in queries:
-            query_info = {"id": query_id, "name": name, "latest_request": None}
-
-            # Get latest request for this query
-            latest_request = self.get_latest_request(query_id)
-            if latest_request:
-                query_info["latest_request"] = latest_request
-
-            result.append(query_info)
+            if not cursor.fetchone():
+                result.append({"id": query_id, "name": name, "type": query_type, "min_interval": min_interval})
 
         return result
 
