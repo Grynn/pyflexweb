@@ -65,6 +65,16 @@ config set|get|unset|list    Manage defaults (output_dir, poll_interval, max_att
 
 Per-query overrides: `pyflexweb query interval 123456 12` (set to 12h)
 
+## Publishing
+
+Bump version, commit, tag, and push:
+
+```bash
+make version
+```
+
+Then [create a GitHub release](https://github.com/grynn/pyflexweb/releases/new) from the tag. GitHub Actions will publish to PyPI automatically.
+
 ## License
 
 GPL-3.0-or-later
