@@ -34,4 +34,4 @@ version: check-clean test ## Bump patch version, commit, tag, and push
 		git commit -m "v$$VERSION"; \
 		git tag "v$$VERSION"; \
 		git push && git push --tags
-	@echo "Done. Create a GitHub release to publish to PyPI."
+	@echo "Done. GitHub Actions will publish to PyPI."

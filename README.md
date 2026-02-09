@@ -67,13 +67,7 @@ Per-query overrides: `pyflexweb query interval 123456 12` (set to 12h)
 
 ## Publishing
 
-Bump version, commit, tag, and push:
-
-```bash
-make version
-```
-
-Then [create a GitHub release](https://github.com/grynn/pyflexweb/releases/new) from the tag. GitHub Actions will publish to PyPI automatically.
+`make version` bumps the patch version, commits, tags, and pushes. GitHub Actions publishes to PyPI on any `v*` tag.
 
 ## License
 
