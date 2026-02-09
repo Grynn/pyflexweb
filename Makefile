@@ -27,7 +27,7 @@ check-clean:
 	fi
 
 version: check-clean test ## Bump patch version, commit, tag, and push
-	@uv version --patch
+	@uv version --bump patch
 	@VERSION=$$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"); \
 		uv sync --all-extras; \
 		git add pyproject.toml uv.lock; \
