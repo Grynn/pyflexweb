@@ -7,13 +7,30 @@ from datetime import datetime, timedelta
 import platformdirs
 
 
+def resolve_data_dir() -> str:
+    """Resolve pyflexweb data directory with fallback chain.
+
+    Resolution order:
+    1. PYFLEXWEB_DATA_DIR env var (explicit override)
+    2. platformdirs.user_data_dir (if directory exists — user override)
+    3. platformdirs.site_data_dir (system-wide shared default)
+    """
+    env_dir = os.getenv("PYFLEXWEB_DATA_DIR")
+    if env_dir:
+        return env_dir
+    user_dir = platformdirs.user_data_dir("pyflexweb")
+    if os.path.isdir(user_dir):
+        return user_dir
+    return platformdirs.site_data_dir("pyflexweb")
+
+
 class FlexDatabase:
     """Manages the local database for tokens, queries, and download history."""
 
     DB_VERSION = 4  # Increment when schema changes
 
     def __init__(self, db_dir: str = None):
-        self.db_dir = db_dir if db_dir is not None else platformdirs.user_data_dir("pyflexweb")
+        self.db_dir = db_dir if db_dir is not None else resolve_data_dir()
         os.makedirs(self.db_dir, exist_ok=True)
         self.db_path = os.path.join(self.db_dir, "status.db")
         self.conn = self._init_db()

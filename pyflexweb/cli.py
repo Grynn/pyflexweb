@@ -7,9 +7,8 @@ This module provides the main entry point and argument parsing for the PyFlexWeb
 import sys
 
 import click
-import platformdirs
 
-from .database import FlexDatabase
+from .database import FlexDatabase, resolve_data_dir
 from .handlers import (
     VALID_QUERY_TYPES,
     handle_config_command,
@@ -39,8 +38,7 @@ def get_effective_options(ctx, **provided_options):
         elif option_name == "max_attempts":
             effective[option_name] = int(db.get_config(config_key, "20"))
         elif option_name == "output_dir":
-            default_output_dir = str(platformdirs.user_data_path("pyflexweb"))
-            effective[option_name] = db.get_config(config_key, default_output_dir)
+            effective[option_name] = db.get_config(config_key, resolve_data_dir())
 
     # Keep other options as-is
     for key, value in provided_options.items():
@@ -65,8 +63,7 @@ def cli(ctx):
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
         click.echo(f"\nDatabase directory: {db.db_dir}")
-        default_output_dir = str(platformdirs.user_data_path("pyflexweb"))
-        click.echo(f"Default output directory: {default_output_dir}")
+        click.echo(f"Default output directory: {resolve_data_dir()}")
         exit(1)
 
     return 0

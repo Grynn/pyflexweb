@@ -311,10 +311,10 @@ def handle_config_command(args: dict[str, Any], db: FlexDatabase) -> int:
             print(f"{args.key} was not set")
         return 0
     elif args.subcommand == "list":
-        import platformdirs
+        from .database import resolve_data_dir
 
         config_defaults = {
-            "default_output_dir": str(platformdirs.user_data_path("pyflexweb")),
+            "default_output_dir": resolve_data_dir(),
             "default_poll_interval": "30",
             "default_max_attempts": "20",
         }
