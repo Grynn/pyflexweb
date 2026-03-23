@@ -167,8 +167,15 @@ class TestClickCli(unittest.TestCase):
     # --- Query CLI tests ---
 
     def test_query_add_command(self):
-        """Test the query add command."""
+        """Test the query add command — --account is required."""
+        # Without --account should fail (exit code 2 = missing option)
         result = self.runner.invoke(cli, ["query", "add", "123456", "--name", "Test Query"])
+        self.assertEqual(result.exit_code, 2)
+        self.mock_query_handler.assert_not_called()
+
+    def test_query_add_command_with_account(self):
+        """Test the query add command with required --account."""
+        result = self.runner.invoke(cli, ["query", "add", "123456", "--name", "Test Query", "--account", "U111"])
         self.assertEqual(result.exit_code, 0)
         self.mock_query_handler.assert_called_once()
         args = self.mock_query_handler.call_args[0][0]
@@ -176,11 +183,14 @@ class TestClickCli(unittest.TestCase):
         self.assertEqual(args.query_id, "123456")
         self.assertEqual(args.name, "Test Query")
         self.assertEqual(args.query_type, "activity")  # default type
-        self.assertIsNone(args.account)
+        self.assertEqual(args.account, "U111")
 
     def test_query_add_trade_confirmation(self):
         """Test the query add command with trade-confirmation type."""
-        result = self.runner.invoke(cli, ["query", "add", "789", "--name", "Trade", "--type", "trade-confirmation"])
+        result = self.runner.invoke(
+            cli,
+            ["query", "add", "789", "--name", "Trade", "--type", "trade-confirmation", "--account", "U111"],
+        )
         self.assertEqual(result.exit_code, 0)
         self.mock_query_handler.assert_called_once()
         args = self.mock_query_handler.call_args[0][0]
@@ -190,7 +200,7 @@ class TestClickCli(unittest.TestCase):
 
     def test_query_add_with_min_interval(self):
         """Test the query add command with custom min interval."""
-        result = self.runner.invoke(cli, ["query", "add", "123", "--name", "Custom", "--min-interval", "12"])
+        result = self.runner.invoke(cli, ["query", "add", "123", "--name", "Custom", "--min-interval", "12", "--account", "U111"])
         self.assertEqual(result.exit_code, 0)
         self.mock_query_handler.assert_called_once()
         args = self.mock_query_handler.call_args[0][0]

@@ -91,16 +91,15 @@ def handle_account_command(args: dict[str, Any], db: FlexDatabase) -> int:
 
     elif args.subcommand == "remove":
         result = db.remove_account(args.account_id)
-        if result is False:
-            # Queries still reference this account
-            print(f"Cannot remove account {args.account_id}: queries are still associated with it.")
+        if result is None:
+            print(f"Account '{args.account_id}' not found.")
+            return 1
+        elif result is False:
+            print(f"Cannot remove account '{args.account_id}': queries are still associated with it.")
             print("Reassign or remove those queries first (pyflexweb query list).")
             return 1
-        elif result:
-            print(f"Account {args.account_id} removed.")
         else:
-            print(f"Account {args.account_id} not found.")
-            return 1
+            print(f"Account '{args.account_id}' removed.")
         return 0
 
     elif args.subcommand == "rename":
@@ -296,8 +295,13 @@ def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
         token = db.resolve_token(query_id)
         if not token:
             account_id = query_info.get("account_id")
-            print(f"\nSkipping: {query_name} (ID: {query_id}) — token not found for account '{account_id}'.")
-            print(f"  Run: pyflexweb account add {account_id} --token <token>")
+            print(f"\nSkipping: {query_name} (ID: {query_id}) — token not found.")
+            if account_id:
+                print(f"  Account '{account_id}' has no token configured.")
+                print(f"  Run: pyflexweb account add {account_id} --token <token>")
+            else:
+                print("  No account is associated with this query.")
+                print("  Use 'pyflexweb account list' and re-associate via 'pyflexweb query add ... --account <id>'")
             overall_success = False
             continue
 

@@ -142,10 +142,20 @@ class TestAccountHandler(unittest.TestCase):
             result = handle_account_command(args, self.mock_db)
             self.assertEqual(result, 0)
             self.mock_db.remove_account.assert_called_once_with("U111")
-            mock_print.assert_called_once_with("Account U111 removed.")
+            mock_print.assert_called_once_with("Account 'U111' removed.")
+
+    def test_account_remove_not_found(self):
+        """Test removing an account that does not exist (returns None)."""
+        args = MagicMock(subcommand="remove", account_id="U404")
+        self.mock_db.remove_account.return_value = None
+
+        with patch("builtins.print") as mock_print:
+            result = handle_account_command(args, self.mock_db)
+            self.assertEqual(result, 1)
+            mock_print.assert_called_once_with("Account 'U404' not found.")
 
     def test_account_remove_blocked(self):
-        """Test removing an account that still has queries associated."""
+        """Test removing an account that still has queries associated (returns False)."""
         args = MagicMock(subcommand="remove", account_id="U999")
         self.mock_db.remove_account.return_value = False
 
@@ -153,7 +163,7 @@ class TestAccountHandler(unittest.TestCase):
             result = handle_account_command(args, self.mock_db)
             self.assertEqual(result, 1)
             self.assertEqual(mock_print.call_count, 2)
-            mock_print.assert_any_call("Cannot remove account U999: queries are still associated with it.")
+            mock_print.assert_any_call("Cannot remove account 'U999': queries are still associated with it.")
             mock_print.assert_any_call("Reassign or remove those queries first (pyflexweb query list).")
 
     def test_account_rename_success(self):

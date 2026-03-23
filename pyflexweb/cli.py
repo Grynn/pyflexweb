@@ -142,7 +142,7 @@ def account_list(ctx):
 @click.argument("account_id")
 @click.pass_context
 def account_remove(ctx, account_id):
-    """Remove an account. Queries using it will fall back to the global token."""
+    """Remove an account. Blocked if any queries still reference it."""
     args = type("Args", (), {"subcommand": "remove", "account_id": account_id})
     return handle_account_command(args, ctx.obj["db"])
 
@@ -230,7 +230,7 @@ def query(ctx, json_output):
 @click.option("--name", required=True, help="A descriptive name for the query")
 @click.option("--type", "query_type", type=click.Choice(VALID_QUERY_TYPES), default="activity", help="Query type (default: activity)")
 @click.option("--min-interval", type=int, default=None, help="Min hours between downloads (overrides type default)")
-@click.option("--account", default=None, help="Account ID to associate with this query")
+@click.option("--account", required=True, help="Account ID to associate with this query")
 @click.pass_context
 def query_add(ctx, query_id, name, query_type, min_interval, account):
     """Add a new query ID."""

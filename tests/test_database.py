@@ -310,19 +310,27 @@ class TestAccountOperations(unittest.TestCase):
         self.assertIsNone(self.db.get_account("nonexistent"))
 
     def test_placeholder_warning_unnamed(self):
+        """Warning fires only for the __default__ placeholder, not arbitrary unnamed accounts."""
+        # A user-created account with no name should NOT trigger the warning
         self.db.add_account("U111", None, "t")
+        self.assertIsNone(self.db.get_placeholder_warning())
+
+        # The migration placeholder account WITHOUT a name SHOULD trigger the warning
+        self.db.add_account("__default__", None, "t2")
         w = self.db.get_placeholder_warning()
         self.assertIsNotNone(w)
-        self.assertIn("U111", w)
+        self.assertIn("__default__", w)
 
     def test_placeholder_warning_named_no_warning(self):
-        self.db.add_account("U111", "Named", "t")
+        """No warning when placeholder has been given a display name."""
+        self.db.add_account("__default__", "My Main Account", "t")
         self.assertIsNone(self.db.get_placeholder_warning())
 
     def test_placeholder_warning_clears_after_rename(self):
-        self.db.add_account("U111", None, "t")
+        """Warning disappears after renaming the placeholder."""
+        self.db.add_account("__default__", None, "t")
         self.assertIsNotNone(self.db.get_placeholder_warning())
-        self.db.rename_account("U111", "Named")
+        self.db.rename_account("__default__", "Named")
         self.assertIsNone(self.db.get_placeholder_warning())
 
 

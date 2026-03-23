@@ -53,12 +53,12 @@ pyflexweb account remove U11049821
 
 When downloading, pyflexweb resolves the token for each query:
 
-1. If the query has an `--account`, use that account's token
-2. Otherwise, fall back to the global token (`pyflexweb token set`)
-3. If neither exists, the query is skipped with a clear error
+1. Look up the account associated with the query
+2. Use that account's token
+3. If the account has no token configured, the query is skipped with a clear error
 
-This is fully backward compatible — if you don't use accounts, everything
-works exactly as before with the global token.
+Every query must be associated with an account (`--account` is required when adding queries).
+Legacy global tokens are automatically migrated to a placeholder account on first run.
 
 ## Usage
 

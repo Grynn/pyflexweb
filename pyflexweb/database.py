@@ -248,17 +248,22 @@ class FlexDatabase:
     # --- Placeholder account warning ---
 
     def get_placeholder_warning(self) -> str | None:
-        """Return a warning string if any account is unnamed (placeholder not yet configured)."""
+        """Return a warning string if the migration placeholder account is still unnamed.
+
+        Only warns about PLACEHOLDER_ACCOUNT_ID — not about user-created accounts
+        without a display name (those are intentional).
+        """
         cursor = self.conn.cursor()
-        cursor.execute("SELECT id FROM accounts WHERE name IS NULL")
-        rows = cursor.fetchall()
-        if not rows:
+        cursor.execute(
+            "SELECT id FROM accounts WHERE id = ? AND name IS NULL",
+            (PLACEHOLDER_ACCOUNT_ID,),
+        )
+        if not cursor.fetchone():
             return None
-        ids = ", ".join(r[0] for r in rows)
         return (
-            f"⚠️  Warning: unnamed account(s) detected: {ids}\n"
-            f"   These were created during migration from the legacy global token.\n"
-            f'   Run: pyflexweb account rename <id> "<DisplayName>"  to name them.'
+            f"⚠️  Warning: migration placeholder account '{PLACEHOLDER_ACCOUNT_ID}' has no display name.\n"
+            f"   This was created automatically from your legacy global token.\n"
+            f'   Run: pyflexweb account rename {PLACEHOLDER_ACCOUNT_ID} "<DisplayName>"  to name it.'
         )
 
     # --- Token (legacy — kept for migration compatibility only) ---
@@ -329,16 +334,26 @@ class FlexDatabase:
         cursor.execute("SELECT id, name, token, added_on FROM accounts ORDER BY added_on")
         return [{"id": r[0], "name": r[1], "token": r[2], "added_on": r[3]} for r in cursor.fetchall()]
 
-    def remove_account(self, account_id: str) -> bool:
-        """Remove an account. Fails if any queries still reference it."""
+    def remove_account(self, account_id: str) -> bool | None:
+        """Remove an account.
+
+        Returns:
+            True  — account removed successfully
+            False — blocked: queries still reference this account
+            None  — account not found
+        """
         cursor = self.conn.cursor()
+        # Check the account exists first
+        cursor.execute("SELECT COUNT(*) FROM accounts WHERE id = ?", (account_id,))
+        if cursor.fetchone()[0] == 0:
+            return None  # not found
+        # Check for associated queries
         cursor.execute("SELECT COUNT(*) FROM queries WHERE account_id = ?", (account_id,))
-        count = cursor.fetchone()[0]
-        if count > 0:
-            return False  # caller must reassign or remove queries first
+        if cursor.fetchone()[0] > 0:
+            return False  # blocked — caller must reassign or remove queries first
         cursor.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
         self.conn.commit()
-        return cursor.rowcount > 0
+        return True
 
     def rename_account(self, account_id: str, new_name: str) -> bool:
         """Rename an account."""
