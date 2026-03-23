@@ -196,9 +196,7 @@ class FlexDatabase:
                     )
                     conn.commit()
 
-                placeholder_exists = bool(
-                    cursor.execute("SELECT 1 FROM accounts WHERE id = ?", (PLACEHOLDER_ACCOUNT_ID,)).fetchone()
-                )
+                placeholder_exists = bool(cursor.execute("SELECT 1 FROM accounts WHERE id = ?", (PLACEHOLDER_ACCOUNT_ID,)).fetchone())
 
                 # Fetch existing rows before rebuild
                 has_account_col = "account_id" in col_info
@@ -234,8 +232,7 @@ class FlexDatabase:
                             # No account available — drop this orphan query
                             continue
                     cursor.execute(
-                        "INSERT INTO queries (id, name, added_on, min_interval, type, account_id)"
-                        " VALUES (?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO queries (id, name, added_on, min_interval, type, account_id) VALUES (?, ?, ?, ?, ?, ?)",
                         (qid, qname, added_on, min_interval, qtype or "activity", account_id),
                     )
 
@@ -261,7 +258,7 @@ class FlexDatabase:
         return (
             f"⚠️  Warning: unnamed account(s) detected: {ids}\n"
             f"   These were created during migration from the legacy global token.\n"
-            f"   Run: pyflexweb account rename <id> \"<DisplayName>\"  to name them."
+            f'   Run: pyflexweb account rename <id> "<DisplayName>"  to name them.'
         )
 
     # --- Token (legacy — kept for migration compatibility only) ---
@@ -359,7 +356,14 @@ class FlexDatabase:
 
     # --- Queries ---
 
-    def add_query(self, query_id: str, name: str, query_type: str = "activity", min_interval: int | None = None, account_id: str | None = None) -> None:
+    def add_query(
+        self,
+        query_id: str,
+        name: str,
+        query_type: str = "activity",
+        min_interval: int | None = None,
+        account_id: str | None = None,
+    ) -> None:
         """Add or update a query. account_id is required."""
         if account_id is None:
             raise ValueError("account_id is required — every query must belong to an account")

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from .client import IBKRFlexClient
-from .database import PLACEHOLDER_ACCOUNT_ID, FlexDatabase
+from .database import FlexDatabase
 
 # Default minimum interval between downloads (hours) per query type
 TYPE_INTERVAL_DEFAULTS = {
@@ -234,7 +234,10 @@ def handle_query_command(args: dict[str, Any], db: FlexDatabase) -> int:
                 last_time = "Never"
                 status = "-"
 
-            print(f"{query_id:<10} {name_display[:30]:<30} {type_display:<20} {account_display:<12} {interval_display:<10} {last_time:<20} {status:<10}")
+            print(
+                f"{query_id:<10} {name_display[:30]:<30} {type_display:<20}"
+                f" {account_display:<12} {interval_display:<10} {last_time:<20} {status:<10}"
+            )
 
         return 0
 

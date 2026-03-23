@@ -227,7 +227,6 @@ class TestFlexDatabase(unittest.TestCase):
         self.assertIn("default_poll_interval", config_dict)
 
 
-
 class TestAccountOperations(unittest.TestCase):
     """Test account CRUD operations."""
 
@@ -418,8 +417,16 @@ class TestDatabaseMigration(unittest.TestCase):
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
         c.execute("CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        c.execute("CREATE TABLE queries (id TEXT PRIMARY KEY, name TEXT, added_on DATETIME DEFAULT CURRENT_TIMESTAMP, min_interval INTEGER, type TEXT DEFAULT 'activity')")
-        c.execute("CREATE TABLE requests (request_id TEXT PRIMARY KEY, query_id TEXT, status TEXT, requested_at DATETIME, completed_at DATETIME, last_updated DATETIME, output_path TEXT)")
+        c.execute(
+            "CREATE TABLE queries (id TEXT PRIMARY KEY, name TEXT,"
+            " added_on DATETIME DEFAULT CURRENT_TIMESTAMP,"
+            " min_interval INTEGER, type TEXT DEFAULT 'activity')"
+        )
+        c.execute(
+            "CREATE TABLE requests (request_id TEXT PRIMARY KEY, query_id TEXT,"
+            " status TEXT, requested_at DATETIME, completed_at DATETIME,"
+            " last_updated DATETIME, output_path TEXT)"
+        )
         c.execute("INSERT INTO config VALUES ('db_version', '4')")
         if with_token:
             c.execute("INSERT INTO config VALUES ('token', 'global_tok')")

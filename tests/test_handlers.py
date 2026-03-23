@@ -30,7 +30,9 @@ class TestTokenHandler(unittest.TestCase):
             self.assertEqual(result, 0)
             self.mock_db.set_token.assert_called_once_with("test_token")
             self.assertEqual(mock_print.call_count, 2)
-            mock_print.assert_any_call("Note: 'pyflexweb token set' is deprecated. Use 'pyflexweb account add <id> --token <token>' instead.")
+            mock_print.assert_any_call(
+                "Note: 'pyflexweb token set' is deprecated. Use 'pyflexweb account add <id> --token <token>' instead."
+            )
             mock_print.assert_any_call("Legacy global token set. It will be used as a fallback only during migration.")
 
     def test_token_get_success(self):
@@ -220,7 +222,7 @@ class TestQueryHandler(unittest.TestCase):
         args.account = None
         self.mock_db.list_accounts.return_value = []
 
-        with patch("builtins.print") as mock_print:
+        with patch("builtins.print"):
             result = handle_query_command(args, self.mock_db)
             self.assertEqual(result, 1)
             self.mock_db.add_query.assert_not_called()
@@ -258,7 +260,9 @@ class TestQueryHandler(unittest.TestCase):
             result = handle_query_command(args, self.mock_db)
             self.assertEqual(result, 0)
             self.mock_db.get_account.assert_called_once_with("U111")
-            self.mock_db.add_query.assert_called_once_with("123456", "With Account", query_type="activity", min_interval=None, account_id="U111")
+            self.mock_db.add_query.assert_called_once_with(
+                "123456", "With Account", query_type="activity", min_interval=None, account_id="U111"
+            )
             mock_print.assert_called_once_with("Query ID 123456 added (activity), account: U111.")
 
     def test_query_add_with_invalid_account(self):
@@ -273,7 +277,7 @@ class TestQueryHandler(unittest.TestCase):
 
         self.mock_db.get_account.return_value = None
 
-        with patch("builtins.print") as mock_print:
+        with patch("builtins.print"):
             result = handle_query_command(args, self.mock_db)
             self.assertEqual(result, 1)
             self.mock_db.add_query.assert_not_called()
@@ -392,7 +396,14 @@ class TestQueryHandler(unittest.TestCase):
                 "status": "completed",
             },
         }
-        query2 = {"id": "789012", "name": "Another Query", "type": "trade-confirmation", "min_interval": 2, "account_id": None, "latest_request": None}
+        query2 = {
+            "id": "789012",
+            "name": "Another Query",
+            "type": "trade-confirmation",
+            "min_interval": 2,
+            "account_id": None,
+            "latest_request": None,
+        }
         self.mock_db.get_all_queries_with_status.return_value = [query1, query2]
 
         with patch("builtins.print") as mock_print:
@@ -410,7 +421,9 @@ class TestQueryHandler(unittest.TestCase):
             result = handle_query_command(args, self.mock_db)
             self.assertEqual(result, 0)
             self.mock_db.get_all_queries_with_status.assert_called_once()
-            mock_print.assert_called_once_with("No query IDs found. Add one with 'pyflexweb query add <query_id> --name \"Query name\" --account <account_id>'")
+            mock_print.assert_called_once_with(
+                "No query IDs found. Add one with 'pyflexweb query add <query_id> --name \"Query name\" --account <account_id>'"
+            )
 
     def test_query_list_json_output(self):
         """Test listing queries in JSON format."""
@@ -475,10 +488,16 @@ class TestDownloadHandler(unittest.TestCase):
     def test_download_no_token(self):
         """Test download when no token is available (neither account nor global)."""
         args = MagicMock(query="123456", output=None, output_dir=None)
-        self.mock_db.get_query_info.return_value = {"id": "123456", "name": "Test Query", "type": "activity", "min_interval": None, "account_id": None}
+        self.mock_db.get_query_info.return_value = {
+            "id": "123456",
+            "name": "Test Query",
+            "type": "activity",
+            "min_interval": None,
+            "account_id": None,
+        }
         self.mock_db.resolve_token.return_value = None
 
-        with patch("builtins.print") as mock_print:
+        with patch("builtins.print"):
             result = handle_download_command(args, self.mock_db)
             self.assertEqual(result, 1)
             self.mock_db.resolve_token.assert_called_once_with("123456")
@@ -486,13 +505,19 @@ class TestDownloadHandler(unittest.TestCase):
     def test_download_with_account_token(self):
         """Test download uses account-specific token."""
         args = MagicMock(query="123456", force=True, output="report.xml", output_dir=None, max_attempts=1, poll_interval=1)
-        self.mock_db.get_query_info.return_value = {"id": "123456", "name": "Test Query", "type": "activity", "min_interval": None, "account_id": "U111"}
+        self.mock_db.get_query_info.return_value = {
+            "id": "123456",
+            "name": "Test Query",
+            "type": "activity",
+            "min_interval": None,
+            "account_id": "U111",
+        }
         self.mock_db.resolve_token.return_value = "account_token"
 
         self.mock_client.request_report.return_value = "REQ123"
         self.mock_client.get_report.return_value = "<xml>report</xml>"
 
-        with patch("builtins.open", unittest.mock.mock_open()) as mock_open:
+        with patch("builtins.open", unittest.mock.mock_open()):
             result = handle_download_command(args, self.mock_db)
             self.assertEqual(result, 0)
 
@@ -525,7 +550,13 @@ class TestDownloadHandler(unittest.TestCase):
     def test_download_already_downloaded_within_interval(self):
         """Test download when report was already downloaded within min interval."""
         args = MagicMock(query="123456", force=False, output=None, output_dir=None)
-        self.mock_db.get_query_info.return_value = {"id": "123456", "name": "Test Query", "type": "activity", "min_interval": None, "account_id": None}
+        self.mock_db.get_query_info.return_value = {
+            "id": "123456",
+            "name": "Test Query",
+            "type": "activity",
+            "min_interval": None,
+            "account_id": None,
+        }
         self.mock_db.resolve_token.return_value = "test_token"
 
         now = datetime.now()
@@ -553,7 +584,13 @@ class TestDownloadHandler(unittest.TestCase):
     def test_download_force_success(self):
         """Test forced download with successful outcome."""
         args = MagicMock(query="123456", force=True, output="forced_download.xml", output_dir=None, max_attempts=1, poll_interval=1)
-        self.mock_db.get_query_info.return_value = {"id": "123456", "name": "Test Query", "type": "activity", "min_interval": None, "account_id": None}
+        self.mock_db.get_query_info.return_value = {
+            "id": "123456",
+            "name": "Test Query",
+            "type": "activity",
+            "min_interval": None,
+            "account_id": None,
+        }
         self.mock_db.resolve_token.return_value = "test_token"
 
         self.mock_client.request_report.return_value = "REQ123"
@@ -578,7 +615,14 @@ class TestDownloadHandler(unittest.TestCase):
         args = MagicMock(query="all", force=True, output=None, output_dir=".", max_attempts=1, poll_interval=1)
         self.mock_db.get_all_queries_with_status.return_value = [
             {"id": "111", "name": "Activity", "type": "activity", "min_interval": None, "account_id": None, "latest_request": None},
-            {"id": "222", "name": "Trade", "type": "trade-confirmation", "min_interval": None, "account_id": "U111", "latest_request": None},
+            {
+                "id": "222",
+                "name": "Trade",
+                "type": "trade-confirmation",
+                "min_interval": None,
+                "account_id": "U111",
+                "latest_request": None,
+            },
         ]
         self.mock_db.resolve_token.return_value = "test_token"
 

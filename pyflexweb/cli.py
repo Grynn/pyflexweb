@@ -235,7 +235,16 @@ def query(ctx, json_output):
 def query_add(ctx, query_id, name, query_type, min_interval, account):
     """Add a new query ID."""
     args = type(
-        "Args", (), {"subcommand": "add", "query_id": query_id, "name": name, "query_type": query_type, "min_interval": min_interval, "account": account}
+        "Args",
+        (),
+        {
+            "subcommand": "add",
+            "query_id": query_id,
+            "name": name,
+            "query_type": query_type,
+            "min_interval": min_interval,
+            "account": account,
+        },
     )
     return handle_query_command(args, ctx.obj["db"])
 
