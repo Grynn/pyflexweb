@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
-from pyflexweb.database import FlexDatabase
+from pyflexweb.database import PLACEHOLDER_ACCOUNT_ID, FlexDatabase
 
 
 class TestFlexDatabase(unittest.TestCase):
@@ -30,6 +30,11 @@ class TestFlexDatabase(unittest.TestCase):
         if os.path.exists(self.temp_db_dir):
             shutil.rmtree(self.temp_db_dir)
 
+    def _add_default_account(self):
+        """Add a default account for tests that don't focus on account logic."""
+        self.db.add_account("U_TEST", "Test Account", "tok_test")
+        return "U_TEST"
+
     def test_get_db_path(self):
         db_path = self.db.get_db_path()
         self.assertEqual(db_path, os.path.join(self.temp_db_dir, "status.db"))
@@ -44,7 +49,8 @@ class TestFlexDatabase(unittest.TestCase):
         self.assertIsNone(self.db.get_token())
 
     def test_query_operations(self):
-        self.db.add_query("123456", "Test Query")
+        acct = self._add_default_account()
+        self.db.add_query("123456", "Test Query", account_id=acct)
         query_info = self.db.get_query_info("123456")
         self.assertIsNotNone(query_info)
         self.assertEqual(query_info["id"], "123456")
@@ -61,8 +67,9 @@ class TestFlexDatabase(unittest.TestCase):
         self.assertFalse(self.db.remove_query("123456"))
 
     def test_query_with_type(self):
-        self.db.add_query("111", "Activity Query", query_type="activity")
-        self.db.add_query("222", "Trade Conf", query_type="trade-confirmation")
+        acct = self._add_default_account()
+        self.db.add_query("111", "Activity Query", query_type="activity", account_id=acct)
+        self.db.add_query("222", "Trade Conf", query_type="trade-confirmation", account_id=acct)
 
         q1 = self.db.get_query_info("111")
         self.assertEqual(q1["type"], "activity")
@@ -71,7 +78,8 @@ class TestFlexDatabase(unittest.TestCase):
         self.assertEqual(q2["type"], "trade-confirmation")
 
     def test_query_with_min_interval(self):
-        self.db.add_query("111", "Custom Interval", min_interval=12)
+        acct = self._add_default_account()
+        self.db.add_query("111", "Custom Interval", min_interval=12, account_id=acct)
         q = self.db.get_query_info("111")
         self.assertEqual(q["min_interval"], 12)
 
@@ -84,9 +92,10 @@ class TestFlexDatabase(unittest.TestCase):
         self.assertIsNone(q["min_interval"])
 
     def test_list_queries(self):
-        self.db.add_query("111", "First Query")
-        self.db.add_query("222", "Second Query")
-        self.db.add_query("333", "Third Query")
+        acct = self._add_default_account()
+        self.db.add_query("111", "First Query", account_id=acct)
+        self.db.add_query("222", "Second Query", account_id=acct)
+        self.db.add_query("333", "Third Query", account_id=acct)
 
         queries = self.db.list_queries()
         self.assertEqual(len(queries), 3)
@@ -94,7 +103,8 @@ class TestFlexDatabase(unittest.TestCase):
         self.assertEqual([q[1] for q in queries], ["First Query", "Second Query", "Third Query"])
 
     def test_request_operations(self):
-        self.db.add_query("123456", "Test Query")
+        acct = self._add_default_account()
+        self.db.add_query("123456", "Test Query", account_id=acct)
         self.db.add_request("REQ123", "123456")
 
         request_info = self.db.get_request_info("REQ123")
@@ -110,7 +120,8 @@ class TestFlexDatabase(unittest.TestCase):
         self.assertIsNotNone(request_info["completed_at"])
 
     def test_get_latest_request(self):
-        self.db.add_query("123456", "Test Query")
+        acct = self._add_default_account()
+        self.db.add_query("123456", "Test Query", account_id=acct)
         self.assertIsNone(self.db.get_latest_request("123456"))
 
         with patch("pyflexweb.database.datetime", autospec=True) as mock_datetime:
@@ -126,9 +137,10 @@ class TestFlexDatabase(unittest.TestCase):
         self.assertEqual(latest["request_id"], "REQ2")
 
     def test_get_queries_needing_download(self):
-        self.db.add_query("111", "Activity", query_type="activity")
-        self.db.add_query("222", "Trade Conf", query_type="trade-confirmation")
-        self.db.add_query("333", "Never Downloaded")
+        acct = self._add_default_account()
+        self.db.add_query("111", "Activity", query_type="activity", account_id=acct)
+        self.db.add_query("222", "Trade Conf", query_type="trade-confirmation", account_id=acct)
+        self.db.add_query("333", "Never Downloaded", account_id=acct)
 
         old_time = datetime.now() - timedelta(hours=48)
         recent_time = datetime.now() - timedelta(minutes=30)
@@ -165,8 +177,9 @@ class TestFlexDatabase(unittest.TestCase):
         self.assertNotIn("222", query_ids)
 
     def test_get_all_queries_with_status(self):
-        self.db.add_query("111", "First Query")
-        self.db.add_query("222", "Second Query", query_type="trade-confirmation")
+        acct = self._add_default_account()
+        self.db.add_query("111", "First Query", account_id=acct)
+        self.db.add_query("222", "Second Query", query_type="trade-confirmation", account_id=acct)
 
         self.db.add_request("REQ1", "111")
         self.db.update_request_status("REQ1", "completed", "output.xml")
@@ -177,7 +190,7 @@ class TestFlexDatabase(unittest.TestCase):
         q111 = next(q for q in queries if q["id"] == "111")
         self.assertEqual(q111["name"], "First Query")
         self.assertEqual(q111["type"], "activity")
-        self.assertIsNone(q111["account_id"])
+        self.assertEqual(q111["account_id"], acct)
         self.assertIsNotNone(q111["latest_request"])
         self.assertEqual(q111["latest_request"]["status"], "completed")
 
@@ -214,8 +227,9 @@ class TestFlexDatabase(unittest.TestCase):
         self.assertIn("default_poll_interval", config_dict)
 
 
+
 class TestAccountOperations(unittest.TestCase):
-    """Test account-related database operations."""
+    """Test account CRUD operations."""
 
     def setUp(self):
         self.temp_db_dir = tempfile.mkdtemp()
@@ -234,82 +248,87 @@ class TestAccountOperations(unittest.TestCase):
             shutil.rmtree(self.temp_db_dir)
 
     def test_add_and_get_account(self):
-        self.db.add_account("U1317359", "Cerabella", "token_abc")
-        acct = self.db.get_account("U1317359")
+        self.db.add_account("U111", "Account A", "tok_a")
+        acct = self.db.get_account("U111")
         self.assertIsNotNone(acct)
-        self.assertEqual(acct["id"], "U1317359")
-        self.assertEqual(acct["name"], "Cerabella")
-        self.assertEqual(acct["token"], "token_abc")
-        self.assertIsNotNone(acct["added_on"])
+        self.assertEqual(acct["id"], "U111")
+        self.assertEqual(acct["name"], "Account A")
+        self.assertEqual(acct["token"], "tok_a")
 
     def test_add_account_no_name(self):
-        self.db.add_account("U999", None, "token_xyz")
-        acct = self.db.get_account("U999")
-        self.assertIsNotNone(acct)
-        self.assertIsNone(acct["name"])
-        self.assertEqual(acct["token"], "token_xyz")
+        self.db.add_account("U111", None, "tok_a")
+        self.assertIsNone(self.db.get_account("U111")["name"])
 
     def test_add_account_upsert(self):
-        """Adding the same account ID again should update it."""
-        self.db.add_account("U1317359", "Cerabella", "old_token")
-        self.db.add_account("U1317359", "Cerabella Updated", "new_token")
-        acct = self.db.get_account("U1317359")
-        self.assertEqual(acct["name"], "Cerabella Updated")
-        self.assertEqual(acct["token"], "new_token")
+        self.db.add_account("U111", "Old", "old_tok")
+        self.db.add_account("U111", "New", "new_tok")
+        acct = self.db.get_account("U111")
+        self.assertEqual(acct["name"], "New")
+        self.assertEqual(acct["token"], "new_tok")
 
     def test_list_accounts_empty(self):
         self.assertEqual(self.db.list_accounts(), [])
 
     def test_list_accounts(self):
-        self.db.add_account("U111", "Account A", "tok_a")
-        self.db.add_account("U222", "Account B", "tok_b")
-        accounts = self.db.list_accounts()
-        self.assertEqual(len(accounts), 2)
-        self.assertEqual(accounts[0]["id"], "U111")
-        self.assertEqual(accounts[1]["id"], "U222")
+        self.db.add_account("U111", "A", "ta")
+        self.db.add_account("U222", "B", "tb")
+        self.assertEqual(len(self.db.list_accounts()), 2)
 
-    def test_remove_account(self):
-        self.db.add_account("U111", "Account A", "tok_a")
+    def test_remove_account_no_queries(self):
+        self.db.add_account("U111", "A", "t")
         self.assertTrue(self.db.remove_account("U111"))
         self.assertIsNone(self.db.get_account("U111"))
-        self.assertFalse(self.db.remove_account("U111"))
 
-    def test_remove_account_clears_query_references(self):
-        """Removing an account should clear account_id from queries that reference it."""
-        self.db.add_account("U111", "Account A", "tok_a")
+    def test_remove_account_not_found(self):
+        self.assertFalse(self.db.remove_account("U999"))
+
+    def test_remove_account_blocked_by_queries(self):
+        self.db.add_account("U111", "A", "t")
         self.db.add_query("Q1", "Query 1", account_id="U111")
-        self.db.add_query("Q2", "Query 2", account_id="U111")
-        self.db.add_query("Q3", "Query 3")  # no account
+        self.assertFalse(self.db.remove_account("U111"))
+        self.assertIsNotNone(self.db.get_account("U111"))
 
-        self.db.remove_account("U111")
-
-        q1 = self.db.get_query_info("Q1")
-        q2 = self.db.get_query_info("Q2")
-        q3 = self.db.get_query_info("Q3")
-        self.assertIsNone(q1["account_id"])
-        self.assertIsNone(q2["account_id"])
-        self.assertIsNone(q3["account_id"])
+    def test_remove_account_after_query_removed(self):
+        self.db.add_account("U111", "A", "t")
+        self.db.add_query("Q1", "Q", account_id="U111")
+        self.db.remove_query("Q1")
+        self.assertTrue(self.db.remove_account("U111"))
 
     def test_rename_account(self):
-        self.db.add_account("U111", "Old Name", "tok_a")
-        self.assertTrue(self.db.rename_account("U111", "New Name"))
-        acct = self.db.get_account("U111")
-        self.assertEqual(acct["name"], "New Name")
+        self.db.add_account("U111", "Old", "t")
+        self.assertTrue(self.db.rename_account("U111", "New"))
+        self.assertEqual(self.db.get_account("U111")["name"], "New")
 
     def test_rename_account_not_found(self):
-        self.assertFalse(self.db.rename_account("U999", "Name"))
+        self.assertFalse(self.db.rename_account("U999", "X"))
 
     def test_get_token_for_account(self):
-        self.db.add_account("U111", "Account A", "tok_a")
+        self.db.add_account("U111", "A", "tok_a")
         self.assertEqual(self.db.get_token_for_account("U111"), "tok_a")
         self.assertIsNone(self.db.get_token_for_account("U999"))
 
     def test_get_account_not_found(self):
         self.assertIsNone(self.db.get_account("nonexistent"))
 
+    def test_placeholder_warning_unnamed(self):
+        self.db.add_account("U111", None, "t")
+        w = self.db.get_placeholder_warning()
+        self.assertIsNotNone(w)
+        self.assertIn("U111", w)
+
+    def test_placeholder_warning_named_no_warning(self):
+        self.db.add_account("U111", "Named", "t")
+        self.assertIsNone(self.db.get_placeholder_warning())
+
+    def test_placeholder_warning_clears_after_rename(self):
+        self.db.add_account("U111", None, "t")
+        self.assertIsNotNone(self.db.get_placeholder_warning())
+        self.db.rename_account("U111", "Named")
+        self.assertIsNone(self.db.get_placeholder_warning())
+
 
 class TestQueryAccountIntegration(unittest.TestCase):
-    """Test query + account integration features."""
+    """Test query + account integration: NOT NULL account_id, token resolution."""
 
     def setUp(self):
         self.temp_db_dir = tempfile.mkdtemp()
@@ -328,94 +347,64 @@ class TestQueryAccountIntegration(unittest.TestCase):
             shutil.rmtree(self.temp_db_dir)
 
     def test_add_query_with_account(self):
-        self.db.add_account("U111", "Account A", "tok_a")
-        self.db.add_query("Q1", "Query 1", account_id="U111")
-        q = self.db.get_query_info("Q1")
-        self.assertEqual(q["account_id"], "U111")
+        self.db.add_account("U111", "A", "t")
+        self.db.add_query("Q1", "Query", account_id="U111")
+        self.assertEqual(self.db.get_query_info("Q1")["account_id"], "U111")
 
-    def test_add_query_without_account(self):
-        self.db.add_query("Q1", "Query 1")
-        q = self.db.get_query_info("Q1")
-        self.assertIsNone(q["account_id"])
+    def test_add_query_without_account_raises(self):
+        with self.assertRaises(ValueError):
+            self.db.add_query("Q1", "Query")
 
     def test_set_query_account(self):
-        self.db.add_account("U111", "Account A", "tok_a")
-        self.db.add_query("Q1", "Query 1")
-        self.assertTrue(self.db.set_query_account("Q1", "U111"))
-        q = self.db.get_query_info("Q1")
-        self.assertEqual(q["account_id"], "U111")
+        self.db.add_account("U111", "A", "ta")
+        self.db.add_account("U222", "B", "tb")
+        self.db.add_query("Q1", "Q", account_id="U111")
+        self.db.set_query_account("Q1", "U222")
+        self.assertEqual(self.db.get_query_info("Q1")["account_id"], "U222")
 
-    def test_clear_query_account(self):
-        self.db.add_account("U111", "Account A", "tok_a")
-        self.db.add_query("Q1", "Query 1", account_id="U111")
-        self.assertTrue(self.db.set_query_account("Q1", None))
-        q = self.db.get_query_info("Q1")
-        self.assertIsNone(q["account_id"])
+    def test_set_query_account_empty_raises(self):
+        self.db.add_account("U111", "A", "t")
+        self.db.add_query("Q1", "Q", account_id="U111")
+        with self.assertRaises(ValueError):
+            self.db.set_query_account("Q1", "")
 
     def test_resolve_token_with_account(self):
-        """Token resolution: query with account → account token."""
-        self.db.add_account("U111", "Account A", "account_token")
-        self.db.set_token("global_token")
-        self.db.add_query("Q1", "Query 1", account_id="U111")
+        self.db.add_account("U111", "A", "account_token")
+        self.db.add_query("Q1", "Q", account_id="U111")
+        self.assertEqual(self.db.resolve_token("Q1"), "account_token")
 
-        token = self.db.resolve_token("Q1")
-        self.assertEqual(token, "account_token")
-
-    def test_resolve_token_fallback_to_global(self):
-        """Token resolution: query without account → global token."""
-        self.db.set_token("global_token")
-        self.db.add_query("Q1", "Query 1")
-
-        token = self.db.resolve_token("Q1")
-        self.assertEqual(token, "global_token")
-
-    def test_resolve_token_no_token_available(self):
-        """Token resolution: no account, no global token → None."""
-        self.db.add_query("Q1", "Query 1")
-        token = self.db.resolve_token("Q1")
-        self.assertIsNone(token)
-
-    def test_resolve_token_account_removed_fallback(self):
-        """Token resolution: account deleted → fallback to global."""
-        self.db.add_account("U111", "Account A", "account_token")
-        self.db.set_token("global_token")
-        self.db.add_query("Q1", "Query 1", account_id="U111")
-
-        # Remove account — should clear query's account_id
-        self.db.remove_account("U111")
-
-        token = self.db.resolve_token("Q1")
-        self.assertEqual(token, "global_token")
+    def test_resolve_token_missing_account_returns_none(self):
+        self.db.add_account("U111", "A", "t")
+        self.db.add_query("Q1", "Q", account_id="U111")
+        # Temporarily disable FK enforcement to simulate a corrupt/missing account row
+        self.db.conn.execute("PRAGMA foreign_keys = OFF")
+        self.db.conn.execute("DELETE FROM accounts WHERE id = 'U111'")
+        self.db.conn.commit()
+        self.db.conn.execute("PRAGMA foreign_keys = ON")
+        self.assertIsNone(self.db.resolve_token("Q1"))
 
     def test_resolve_token_nonexistent_query(self):
-        """Token resolution for a query that doesn't exist."""
-        token = self.db.resolve_token("nonexistent")
-        # Falls through to global token
-        self.assertIsNone(token)
+        self.assertIsNone(self.db.resolve_token("nonexistent"))
 
-    def test_get_all_queries_with_status_includes_account(self):
-        self.db.add_account("U111", "Account A", "tok_a")
-        self.db.add_query("Q1", "Query 1", account_id="U111")
-        self.db.add_query("Q2", "Query 2")
-
-        queries = self.db.get_all_queries_with_status()
-        q1 = next(q for q in queries if q["id"] == "Q1")
-        q2 = next(q for q in queries if q["id"] == "Q2")
-        self.assertEqual(q1["account_id"], "U111")
-        self.assertIsNone(q2["account_id"])
+    def test_get_all_queries_includes_account(self):
+        self.db.add_account("U111", "A", "ta")
+        self.db.add_account("U222", "B", "tb")
+        self.db.add_query("Q1", "Q1", account_id="U111")
+        self.db.add_query("Q2", "Q2", account_id="U222")
+        qs = {q["id"]: q for q in self.db.get_all_queries_with_status()}
+        self.assertEqual(qs["Q1"]["account_id"], "U111")
+        self.assertEqual(qs["Q2"]["account_id"], "U222")
 
     def test_get_queries_needing_download_includes_account(self):
-        self.db.add_account("U111", "Account A", "tok_a")
-        self.db.add_query("Q1", "Query 1", account_id="U111")
-
-        type_defaults = {"activity": 6}
-        queries = self.db.get_queries_needing_download(type_defaults)
-        self.assertEqual(len(queries), 1)
-        self.assertEqual(queries[0]["account_id"], "U111")
+        self.db.add_account("U111", "A", "t")
+        self.db.add_query("Q1", "Q", account_id="U111")
+        qs = self.db.get_queries_needing_download({"activity": 6})
+        self.assertEqual(len(qs), 1)
+        self.assertEqual(qs[0]["account_id"], "U111")
 
 
 class TestDatabaseMigration(unittest.TestCase):
-    """Test database migration from v4 to v5."""
+    """Test DB migration from v4 to v6."""
 
     def setUp(self):
         self.temp_db_dir = tempfile.mkdtemp()
@@ -424,46 +413,59 @@ class TestDatabaseMigration(unittest.TestCase):
         if os.path.exists(self.temp_db_dir):
             shutil.rmtree(self.temp_db_dir)
 
-    def test_migration_from_v4_to_v5(self):
-        """Simulate a v4 database and verify migration to v5."""
+    def _make_v4_db(self, with_token=True, with_query=True):
         db_path = os.path.join(self.temp_db_dir, "status.db")
         conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-
-        # Create v4 schema
-        cursor.execute("CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        cursor.execute("CREATE TABLE queries (id TEXT PRIMARY KEY, name TEXT, added_on DATETIME DEFAULT CURRENT_TIMESTAMP, min_interval INTEGER, type TEXT DEFAULT 'activity')")
-        cursor.execute("CREATE TABLE requests (request_id TEXT PRIMARY KEY, query_id TEXT, status TEXT, requested_at DATETIME, completed_at DATETIME, last_updated DATETIME, output_path TEXT)")
-        cursor.execute("INSERT INTO config VALUES ('db_version', '4')")
-        cursor.execute("INSERT INTO config VALUES ('token', 'global_tok')")
-        cursor.execute("INSERT INTO queries (id, name, type) VALUES ('Q1', 'Old Query', 'activity')")
+        c = conn.cursor()
+        c.execute("CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        c.execute("CREATE TABLE queries (id TEXT PRIMARY KEY, name TEXT, added_on DATETIME DEFAULT CURRENT_TIMESTAMP, min_interval INTEGER, type TEXT DEFAULT 'activity')")
+        c.execute("CREATE TABLE requests (request_id TEXT PRIMARY KEY, query_id TEXT, status TEXT, requested_at DATETIME, completed_at DATETIME, last_updated DATETIME, output_path TEXT)")
+        c.execute("INSERT INTO config VALUES ('db_version', '4')")
+        if with_token:
+            c.execute("INSERT INTO config VALUES ('token', 'global_tok')")
+        if with_query:
+            c.execute("INSERT INTO queries (id, name, type) VALUES ('Q1', 'Old Query', 'activity')")
         conn.commit()
         conn.close()
 
-        # Now open with FlexDatabase (should migrate)
+    def test_migration_v4_with_token(self):
+        """v4 + global token → placeholder account, queries assigned, warning shown."""
+        self._make_v4_db(with_token=True, with_query=True)
         with patch("platformdirs.user_data_dir", return_value=self.temp_db_dir):
             db = FlexDatabase()
 
-        # Verify version upgraded
-        cursor = db.conn.cursor()
-        cursor.execute("SELECT value FROM config WHERE key = 'db_version'")
-        self.assertEqual(cursor.fetchone()[0], "5")
+        c = db.conn.cursor()
+        c.execute("SELECT value FROM config WHERE key = 'db_version'")
+        self.assertEqual(c.fetchone()[0], "6")
 
-        # Verify accounts table exists
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'")
-        self.assertIsNotNone(cursor.fetchone())
+        placeholder = db.get_account(PLACEHOLDER_ACCOUNT_ID)
+        self.assertIsNotNone(placeholder)
+        self.assertEqual(placeholder["token"], "global_tok")
+        self.assertIsNone(placeholder["name"])
 
-        # Verify queries table has account_id column
-        cursor.execute("PRAGMA table_info(queries)")
-        columns = [col[1] for col in cursor.fetchall()]
-        self.assertIn("account_id", columns)
-
-        # Verify existing data preserved
-        self.assertEqual(db.get_token(), "global_tok")
         q = db.get_query_info("Q1")
-        self.assertEqual(q["name"], "Old Query")
-        self.assertIsNone(q["account_id"])
+        self.assertEqual(q["account_id"], PLACEHOLDER_ACCOUNT_ID)
+        self.assertEqual(db.resolve_token("Q1"), "global_tok")
 
+        self.assertIsNotNone(db.get_placeholder_warning())
+        db.rename_account(PLACEHOLDER_ACCOUNT_ID, "Mine")
+        self.assertIsNone(db.get_placeholder_warning())
+
+        # account_id column is NOT NULL
+        c.execute("PRAGMA table_info(queries)")
+        col_info = {col[1]: col for col in c.fetchall()}
+        self.assertEqual(col_info["account_id"][3], 1)
+
+        db.close()
+
+    def test_migration_v4_no_token_orphans_dropped(self):
+        """v4 without global token: orphan queries dropped (can't satisfy NOT NULL)."""
+        self._make_v4_db(with_token=False, with_query=True)
+        with patch("platformdirs.user_data_dir", return_value=self.temp_db_dir):
+            db = FlexDatabase()
+
+        self.assertEqual(db.list_accounts(), [])
+        self.assertIsNone(db.get_query_info("Q1"))
         db.close()
 
 

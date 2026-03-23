@@ -19,19 +19,22 @@ class TestTokenHandler(unittest.TestCase):
 
     def setUp(self):
         self.mock_db = MagicMock()
+        self.mock_db.get_placeholder_warning.return_value = None
 
     def test_token_set(self):
-        """Test setting a token."""
+        """Test setting a legacy token."""
         args = MagicMock(subcommand="set", token="test_token")
 
         with patch("builtins.print") as mock_print:
             result = handle_token_command(args, self.mock_db)
             self.assertEqual(result, 0)
             self.mock_db.set_token.assert_called_once_with("test_token")
-            mock_print.assert_called_once_with("Token set successfully.")
+            self.assertEqual(mock_print.call_count, 2)
+            mock_print.assert_any_call("Note: 'pyflexweb token set' is deprecated. Use 'pyflexweb account add <id> --token <token>' instead.")
+            mock_print.assert_any_call("Legacy global token set. It will be used as a fallback only during migration.")
 
     def test_token_get_success(self):
-        """Test getting a token when one exists."""
+        """Test getting a legacy token when one exists."""
         args = MagicMock(subcommand="get")
         self.mock_db.get_token.return_value = "test_token_value"
 
@@ -39,7 +42,9 @@ class TestTokenHandler(unittest.TestCase):
             result = handle_token_command(args, self.mock_db)
             self.assertEqual(result, 0)
             self.mock_db.get_token.assert_called_once()
-            mock_print.assert_called_once_with("Stored token: test_token_value")
+            self.assertEqual(mock_print.call_count, 2)
+            mock_print.assert_any_call("Legacy global token: test_token_value")
+            mock_print.assert_any_call("Note: use 'pyflexweb account list' to see per-account tokens.")
 
     def test_token_get_not_found(self):
         """Test getting a token when none exists."""
@@ -48,19 +53,21 @@ class TestTokenHandler(unittest.TestCase):
 
         with patch("builtins.print") as mock_print:
             result = handle_token_command(args, self.mock_db)
-            self.assertEqual(result, 1)
+            self.assertEqual(result, 0)
             self.mock_db.get_token.assert_called_once()
-            mock_print.assert_called_once_with("No token found. Set one with 'pyflexweb token set <token>'")
+            self.assertEqual(mock_print.call_count, 2)
+            mock_print.assert_any_call("No legacy global token found.")
+            mock_print.assert_any_call("Use 'pyflexweb account list' to see configured accounts and tokens.")
 
     def test_token_unset(self):
-        """Test unsetting a token."""
+        """Test unsetting a legacy token."""
         args = MagicMock(subcommand="unset")
 
         with patch("builtins.print") as mock_print:
             result = handle_token_command(args, self.mock_db)
             self.assertEqual(result, 0)
             self.mock_db.unset_token.assert_called_once()
-            mock_print.assert_called_once_with("Token removed.")
+            mock_print.assert_called_once_with("Legacy global token removed.")
 
     def test_token_invalid_subcommand(self):
         """Test invalid token subcommand."""
@@ -77,6 +84,7 @@ class TestAccountHandler(unittest.TestCase):
 
     def setUp(self):
         self.mock_db = MagicMock()
+        self.mock_db.get_placeholder_warning.return_value = None
 
     def test_account_add(self):
         """Test adding an account."""
@@ -109,18 +117,19 @@ class TestAccountHandler(unittest.TestCase):
             mock_print.assert_called_once_with("No accounts configured. Add one with 'pyflexweb account add <id> --token <token>'")
 
     def test_account_list_with_accounts(self):
-        """Test listing accounts."""
+        """Test listing accounts, including unnamed warning."""
         args = MagicMock(subcommand="list")
         self.mock_db.list_accounts.return_value = [
             {"id": "U111", "name": "Account A", "token": "long_token_value_here", "added_on": "2025-01-01T00:00:00"},
             {"id": "U222", "name": None, "token": "short", "added_on": "2025-02-01T00:00:00"},
         ]
+        self.mock_db.get_placeholder_warning.return_value = "warn"
 
         with patch("builtins.print") as mock_print:
             result = handle_account_command(args, self.mock_db)
             self.assertEqual(result, 0)
-            # Header + separator + 2 accounts = 4 calls
-            self.assertEqual(mock_print.call_count, 4)
+            # warning + header + separator + 2 accounts = 5 calls
+            self.assertEqual(mock_print.call_count, 5)
 
     def test_account_remove_success(self):
         """Test removing an account."""
@@ -133,15 +142,17 @@ class TestAccountHandler(unittest.TestCase):
             self.mock_db.remove_account.assert_called_once_with("U111")
             mock_print.assert_called_once_with("Account U111 removed.")
 
-    def test_account_remove_not_found(self):
-        """Test removing a non-existent account."""
+    def test_account_remove_blocked(self):
+        """Test removing an account that still has queries associated."""
         args = MagicMock(subcommand="remove", account_id="U999")
         self.mock_db.remove_account.return_value = False
 
         with patch("builtins.print") as mock_print:
             result = handle_account_command(args, self.mock_db)
             self.assertEqual(result, 1)
-            mock_print.assert_called_once_with("Account U999 not found.")
+            self.assertEqual(mock_print.call_count, 2)
+            mock_print.assert_any_call("Cannot remove account U999: queries are still associated with it.")
+            mock_print.assert_any_call("Reassign or remove those queries first (pyflexweb query list).")
 
     def test_account_rename_success(self):
         """Test renaming an account."""
@@ -179,9 +190,10 @@ class TestQueryHandler(unittest.TestCase):
 
     def setUp(self):
         self.mock_db = MagicMock()
+        self.mock_db.get_placeholder_warning.return_value = None
 
-    def test_query_add(self):
-        """Test adding a query."""
+    def test_query_add_requires_account(self):
+        """Query add must require --account."""
         args = MagicMock()
         args.subcommand = "add"
         args.query_id = "123456"
@@ -189,15 +201,16 @@ class TestQueryHandler(unittest.TestCase):
         args.query_type = "activity"
         args.min_interval = None
         args.account = None
+        self.mock_db.list_accounts.return_value = [{"id": "U111"}]
 
         with patch("builtins.print") as mock_print:
             result = handle_query_command(args, self.mock_db)
-            self.assertEqual(result, 0)
-            self.mock_db.add_query.assert_called_once_with("123456", "Test Query", query_type="activity", min_interval=None, account_id=None)
-            mock_print.assert_called_once_with("Query ID 123456 added (activity).")
+            self.assertEqual(result, 1)
+            self.mock_db.add_query.assert_not_called()
+            self.assertGreaterEqual(mock_print.call_count, 3)
 
-    def test_query_add_trade_confirmation(self):
-        """Test adding a trade-confirmation query."""
+    def test_query_add_trade_confirmation_requires_account(self):
+        """Trade-confirmation queries also require --account."""
         args = MagicMock()
         args.subcommand = "add"
         args.query_id = "789"
@@ -205,12 +218,12 @@ class TestQueryHandler(unittest.TestCase):
         args.query_type = "trade-confirmation"
         args.min_interval = None
         args.account = None
+        self.mock_db.list_accounts.return_value = []
 
         with patch("builtins.print") as mock_print:
             result = handle_query_command(args, self.mock_db)
-            self.assertEqual(result, 0)
-            self.mock_db.add_query.assert_called_once_with("789", "Trade Conf", query_type="trade-confirmation", min_interval=None, account_id=None)
-            mock_print.assert_called_once_with("Query ID 789 added (trade-confirmation).")
+            self.assertEqual(result, 1)
+            self.mock_db.add_query.assert_not_called()
 
     def test_query_add_with_interval(self):
         """Test adding a query with custom min interval."""
@@ -220,13 +233,14 @@ class TestQueryHandler(unittest.TestCase):
         args.name = "Custom"
         args.query_type = "activity"
         args.min_interval = 12
-        args.account = None
+        args.account = "U111"
+        self.mock_db.get_account.return_value = {"id": "U111", "name": "Acct", "token": "tok"}
 
         with patch("builtins.print") as mock_print:
             result = handle_query_command(args, self.mock_db)
             self.assertEqual(result, 0)
-            self.mock_db.add_query.assert_called_once_with("123456", "Custom", query_type="activity", min_interval=12, account_id=None)
-            mock_print.assert_called_once_with("Query ID 123456 added (activity). Min interval: 12h.")
+            self.mock_db.add_query.assert_called_once_with("123456", "Custom", query_type="activity", min_interval=12, account_id="U111")
+            mock_print.assert_called_once_with("Query ID 123456 added (activity), account: U111. Min interval: 12h.")
 
     def test_query_add_with_account(self):
         """Test adding a query with an account."""
@@ -245,7 +259,7 @@ class TestQueryHandler(unittest.TestCase):
             self.assertEqual(result, 0)
             self.mock_db.get_account.assert_called_once_with("U111")
             self.mock_db.add_query.assert_called_once_with("123456", "With Account", query_type="activity", min_interval=None, account_id="U111")
-            mock_print.assert_called_once_with("Query ID 123456 added (activity). Account: U111.")
+            mock_print.assert_called_once_with("Query ID 123456 added (activity), account: U111.")
 
     def test_query_add_with_invalid_account(self):
         """Test adding a query with a non-existent account."""
@@ -396,7 +410,7 @@ class TestQueryHandler(unittest.TestCase):
             result = handle_query_command(args, self.mock_db)
             self.assertEqual(result, 0)
             self.mock_db.get_all_queries_with_status.assert_called_once()
-            mock_print.assert_called_once_with("No query IDs found. Add one with 'pyflexweb query add <query_id> --name \"Query name\"'")
+            mock_print.assert_called_once_with("No query IDs found. Add one with 'pyflexweb query add <query_id> --name \"Query name\" --account <account_id>'")
 
     def test_query_list_json_output(self):
         """Test listing queries in JSON format."""
@@ -445,6 +459,7 @@ class TestDownloadHandler(unittest.TestCase):
 
     def setUp(self):
         self.mock_db = MagicMock()
+        self.mock_db.get_placeholder_warning.return_value = None
         self.mock_client_patcher = patch("pyflexweb.handlers.IBKRFlexClient")
         self.mock_client_class = self.mock_client_patcher.start()
         self.mock_client = MagicMock()

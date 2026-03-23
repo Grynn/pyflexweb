@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from .client import IBKRFlexClient
-from .database import FlexDatabase
+from .database import PLACEHOLDER_ACCOUNT_ID, FlexDatabase
 
 # Default minimum interval between downloads (hours) per query type
 TYPE_INTERVAL_DEFAULTS = {
@@ -25,23 +25,36 @@ def _effective_interval(query_info: dict) -> int:
     return TYPE_INTERVAL_DEFAULTS.get(query_info.get("type", "activity"), 6)
 
 
+def _warn_placeholder(db: FlexDatabase) -> None:
+    """Print a warning if any unnamed (placeholder) accounts are present."""
+    warning = db.get_placeholder_warning()
+    if warning:
+        print(warning)
+
+
 def handle_token_command(args: dict[str, Any], db: FlexDatabase) -> int:
-    """Handle the 'token' command and its subcommands."""
+    """Handle the 'token' command and its subcommands.
+
+    NOTE: The global token is a legacy concept. IBKR tokens are account-specific.
+    Use 'pyflexweb account add' to configure per-account tokens instead.
+    """
     if args.subcommand == "set":
+        print("Note: 'pyflexweb token set' is deprecated. Use 'pyflexweb account add <id> --token <token>' instead.")
         db.set_token(args.token)
-        print("Token set successfully.")
+        print("Legacy global token set. It will be used as a fallback only during migration.")
         return 0
     elif args.subcommand == "get":
         token = db.get_token()
         if token:
-            print(f"Stored token: {token}")
+            print(f"Legacy global token: {token}")
+            print("Note: use 'pyflexweb account list' to see per-account tokens.")
         else:
-            print("No token found. Set one with 'pyflexweb token set <token>'")
-            return 1
+            print("No legacy global token found.")
+            print("Use 'pyflexweb account list' to see configured accounts and tokens.")
         return 0
     elif args.subcommand == "unset":
         db.unset_token()
-        print("Token removed.")
+        print("Legacy global token removed.")
         return 0
     else:
         print("Missing subcommand. Use 'set', 'get', or 'unset'.")
@@ -65,18 +78,25 @@ def handle_account_command(args: dict[str, Any], db: FlexDatabase) -> int:
             print("No accounts configured. Add one with 'pyflexweb account add <id> --token <token>'")
             return 0
 
-        print(f"{'ID':<15} {'Name':<25} {'Token':<20} {'Added':<20}")
-        print(f"{'-' * 15} {'-' * 25} {'-' * 20} {'-' * 20}")
+        _warn_placeholder(db)
+        print(f"{'ID':<20} {'Name':<25} {'Token':<20} {'Added':<20}")
+        print(f"{'-' * 20} {'-' * 25} {'-' * 20} {'-' * 20}")
         for acct in accounts:
             acct_id = acct["id"]
-            name = acct["name"] or "-"
+            name = acct["name"] or "⚠️  (unnamed)"
             token_display = acct["token"][:8] + "..." if len(acct["token"]) > 8 else acct["token"]
             added = acct["added_on"][:19] if acct["added_on"] else "-"
-            print(f"{acct_id:<15} {name:<25} {token_display:<20} {added:<20}")
+            print(f"{acct_id:<20} {name:<25} {token_display:<20} {added:<20}")
         return 0
 
     elif args.subcommand == "remove":
-        if db.remove_account(args.account_id):
+        result = db.remove_account(args.account_id)
+        if result is False:
+            # Queries still reference this account
+            print(f"Cannot remove account {args.account_id}: queries are still associated with it.")
+            print("Reassign or remove those queries first (pyflexweb query list).")
+            return 1
+        elif result:
             print(f"Account {args.account_id} removed.")
         else:
             print(f"Account {args.account_id} not found.")
@@ -103,19 +123,26 @@ def handle_query_command(args: dict[str, Any], db: FlexDatabase) -> int:
         min_interval = getattr(args, "min_interval", None)
         account_id = getattr(args, "account", None)
 
-        # Validate account_id if provided
-        if account_id:
-            account = db.get_account(account_id)
-            if not account:
-                print(f"Account {account_id} not found. Add it first with 'pyflexweb account add {account_id} --token <token>'")
-                return 1
+        # account_id is required — every query must belong to an account
+        if not account_id:
+            print("Error: --account <account_id> is required.")
+            print("Add an account first: pyflexweb account add <id> --token <token>")
+            print("Then: pyflexweb query add <query_id> --name <name> --account <id>")
+            accounts = db.list_accounts()
+            if accounts:
+                print(f"\nAvailable accounts: {', '.join(a['id'] for a in accounts)}")
+            return 1
+
+        account = db.get_account(account_id)
+        if not account:
+            print(f"Account '{account_id}' not found. Add it first with:")
+            print(f"  pyflexweb account add {account_id} --token <token>")
+            return 1
 
         db.add_query(args.query_id, args.name, query_type=query_type, min_interval=min_interval, account_id=account_id)
-        parts = [f"Query ID {args.query_id} added ({query_type})."]
+        parts = [f"Query ID {args.query_id} added ({query_type}), account: {account_id}."]
         if min_interval is not None:
             parts.append(f"Min interval: {min_interval}h.")
-        if account_id:
-            parts.append(f"Account: {account_id}.")
         print(" ".join(parts))
         return 0
 
@@ -157,8 +184,11 @@ def handle_query_command(args: dict[str, Any], db: FlexDatabase) -> int:
             if json_output:
                 print("[]")
             else:
-                print("No query IDs found. Add one with 'pyflexweb query add <query_id> --name \"Query name\"'")
+                print("No query IDs found. Add one with 'pyflexweb query add <query_id> --name \"Query name\" --account <account_id>'")
             return 0
+
+        if not json_output:
+            _warn_placeholder(db)
 
         if json_output:
             output = []
@@ -215,6 +245,7 @@ def handle_query_command(args: dict[str, Any], db: FlexDatabase) -> int:
 
 def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
     """Handle the 'download' command."""
+    _warn_placeholder(db)
     # Determine which queries to download
     if args.query == "all":
         if args.force:
@@ -258,15 +289,12 @@ def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
         query_id = query_info["id"]
         query_name = query_info["name"] or query_id
 
-        # Resolve token for this query
+        # Resolve token for this query via its account
         token = db.resolve_token(query_id)
         if not token:
             account_id = query_info.get("account_id")
-            if account_id:
-                print(f"\nSkipping: {query_name} (ID: {query_id}) — account {account_id} token not found.")
-            else:
-                print(f"\nSkipping: {query_name} (ID: {query_id}) — no token found.")
-                print("  Set a global token with 'pyflexweb token set <token>' or assign an account.")
+            print(f"\nSkipping: {query_name} (ID: {query_id}) — token not found for account '{account_id}'.")
+            print(f"  Run: pyflexweb account add {account_id} --token <token>")
             overall_success = False
             continue
 
