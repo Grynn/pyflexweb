@@ -31,6 +31,7 @@ class TestClickCli(unittest.TestCase):
             patch("pyflexweb.cli.handle_query_command", return_value=0),
             patch("pyflexweb.cli.handle_download_command", return_value=0),
             patch("pyflexweb.cli.handle_config_command", return_value=0),
+            patch("pyflexweb.cli.handle_account_command", return_value=0),
         ]
 
         # Start all patchers and store mocks
@@ -41,6 +42,7 @@ class TestClickCli(unittest.TestCase):
         self.mock_query_handler = self.mocks[1]
         self.mock_download_handler = self.mocks[2]
         self.mock_config_handler = self.mocks[3]
+        self.mock_account_handler = self.mocks[4]
 
     def tearDown(self):
         self.mock_db_patcher.stop()
@@ -97,6 +99,73 @@ class TestClickCli(unittest.TestCase):
         args = self.mock_token_handler.call_args[0][0]
         self.assertEqual(args.subcommand, "get")
 
+    # --- Account CLI tests ---
+
+    def test_account_add_command(self):
+        """Test the account add command."""
+        result = self.runner.invoke(cli, ["account", "add", "U1317359", "--name", "Cerabella", "--token", "tok_abc"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_account_handler.assert_called_once()
+        args = self.mock_account_handler.call_args[0][0]
+        self.assertEqual(args.subcommand, "add")
+        self.assertEqual(args.account_id, "U1317359")
+        self.assertEqual(args.name, "Cerabella")
+        self.assertEqual(args.token, "tok_abc")
+
+    def test_account_add_no_name(self):
+        """Test the account add command without a name."""
+        result = self.runner.invoke(cli, ["account", "add", "U999", "--token", "tok_xyz"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_account_handler.assert_called_once()
+        args = self.mock_account_handler.call_args[0][0]
+        self.assertEqual(args.subcommand, "add")
+        self.assertEqual(args.account_id, "U999")
+        self.assertIsNone(args.name)
+        self.assertEqual(args.token, "tok_xyz")
+
+    def test_account_add_requires_token(self):
+        """Test that account add requires --token."""
+        result = self.runner.invoke(cli, ["account", "add", "U999"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Missing option", result.output)
+
+    def test_account_list_command(self):
+        """Test the account list command."""
+        result = self.runner.invoke(cli, ["account", "list"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_account_handler.assert_called_once()
+        args = self.mock_account_handler.call_args[0][0]
+        self.assertEqual(args.subcommand, "list")
+
+    def test_account_default_command(self):
+        """Test the account command without subcommand defaults to list."""
+        result = self.runner.invoke(cli, ["account"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_account_handler.assert_called_once()
+        args = self.mock_account_handler.call_args[0][0]
+        self.assertEqual(args.subcommand, "list")
+
+    def test_account_remove_command(self):
+        """Test the account remove command."""
+        result = self.runner.invoke(cli, ["account", "remove", "U111"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_account_handler.assert_called_once()
+        args = self.mock_account_handler.call_args[0][0]
+        self.assertEqual(args.subcommand, "remove")
+        self.assertEqual(args.account_id, "U111")
+
+    def test_account_rename_command(self):
+        """Test the account rename command."""
+        result = self.runner.invoke(cli, ["account", "rename", "U111", "New Name"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_account_handler.assert_called_once()
+        args = self.mock_account_handler.call_args[0][0]
+        self.assertEqual(args.subcommand, "rename")
+        self.assertEqual(args.account_id, "U111")
+        self.assertEqual(args.name, "New Name")
+
+    # --- Query CLI tests ---
+
     def test_query_add_command(self):
         """Test the query add command."""
         result = self.runner.invoke(cli, ["query", "add", "123456", "--name", "Test Query"])
@@ -107,6 +176,7 @@ class TestClickCli(unittest.TestCase):
         self.assertEqual(args.query_id, "123456")
         self.assertEqual(args.name, "Test Query")
         self.assertEqual(args.query_type, "activity")  # default type
+        self.assertIsNone(args.account)
 
     def test_query_add_trade_confirmation(self):
         """Test the query add command with trade-confirmation type."""
@@ -125,6 +195,14 @@ class TestClickCli(unittest.TestCase):
         self.mock_query_handler.assert_called_once()
         args = self.mock_query_handler.call_args[0][0]
         self.assertEqual(args.min_interval, 12)
+
+    def test_query_add_with_account(self):
+        """Test the query add command with --account."""
+        result = self.runner.invoke(cli, ["query", "add", "123", "--name", "With Account", "--account", "U111"])
+        self.assertEqual(result.exit_code, 0)
+        self.mock_query_handler.assert_called_once()
+        args = self.mock_query_handler.call_args[0][0]
+        self.assertEqual(args.account, "U111")
 
     def test_query_remove_command(self):
         """Test the query remove command."""

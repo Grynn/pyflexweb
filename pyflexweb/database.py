@@ -27,7 +27,7 @@ def resolve_data_dir() -> str:
 class FlexDatabase:
     """Manages the local database for tokens, queries, and download history."""
 
-    DB_VERSION = 4  # Increment when schema changes
+    DB_VERSION = 5  # Increment when schema changes
 
     def __init__(self, db_dir: str = None):
         self.db_dir = db_dir if db_dir is not None else resolve_data_dir()
@@ -133,6 +133,27 @@ class FlexDatabase:
             except sqlite3.OperationalError:
                 pass
 
+        if current_version < 5:
+            # Create accounts table
+            cursor.execute(
+                """
+            CREATE TABLE IF NOT EXISTS accounts (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                token TEXT NOT NULL,
+                added_on DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+            )
+            conn.commit()
+
+            # Add account_id column to queries (nullable FK)
+            try:
+                cursor.execute("ALTER TABLE queries ADD COLUMN account_id TEXT REFERENCES accounts(id)")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+
         cursor.execute(
             "INSERT OR REPLACE INTO config VALUES (?, ?)",
             ("db_version", str(self.DB_VERSION)),
@@ -181,15 +202,70 @@ class FlexDatabase:
         self.conn.commit()
         return cursor.rowcount > 0
 
-    # --- Queries ---
+    # --- Accounts ---
 
-    def add_query(self, query_id: str, name: str, query_type: str = "activity", min_interval: int | None = None) -> None:
+    def add_account(self, account_id: str, name: str | None, token: str) -> None:
+        """Add or update an account."""
         cursor = self.conn.cursor()
         cursor.execute(
-            "INSERT OR REPLACE INTO queries (id, name, type, min_interval) VALUES (?, ?, ?, ?)",
-            (query_id, name, query_type, min_interval),
+            "INSERT OR REPLACE INTO accounts (id, name, token) VALUES (?, ?, ?)",
+            (account_id, name, token),
         )
         self.conn.commit()
+
+    def get_account(self, account_id: str) -> dict | None:
+        """Get account info by ID."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, name, token, added_on FROM accounts WHERE id = ?", (account_id,))
+        result = cursor.fetchone()
+        if not result:
+            return None
+        return {"id": result[0], "name": result[1], "token": result[2], "added_on": result[3]}
+
+    def list_accounts(self) -> list[dict]:
+        """List all accounts."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, name, token, added_on FROM accounts ORDER BY added_on")
+        return [{"id": r[0], "name": r[1], "token": r[2], "added_on": r[3]} for r in cursor.fetchall()]
+
+    def remove_account(self, account_id: str) -> bool:
+        """Remove an account. Also clears account_id from any queries referencing it."""
+        cursor = self.conn.cursor()
+        cursor.execute("UPDATE queries SET account_id = NULL WHERE account_id = ?", (account_id,))
+        cursor.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def rename_account(self, account_id: str, new_name: str) -> bool:
+        """Rename an account."""
+        cursor = self.conn.cursor()
+        cursor.execute("UPDATE accounts SET name = ? WHERE id = ?", (new_name, account_id))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def get_token_for_account(self, account_id: str) -> str | None:
+        """Get the token for a specific account."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT token FROM accounts WHERE id = ?", (account_id,))
+        result = cursor.fetchone()
+        return result[0] if result else None
+
+    # --- Queries ---
+
+    def add_query(self, query_id: str, name: str, query_type: str = "activity", min_interval: int | None = None, account_id: str | None = None) -> None:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO queries (id, name, type, min_interval, account_id) VALUES (?, ?, ?, ?, ?)",
+            (query_id, name, query_type, min_interval, account_id),
+        )
+        self.conn.commit()
+
+    def set_query_account(self, query_id: str, account_id: str | None) -> bool:
+        """Set or clear the account association for a query."""
+        cursor = self.conn.cursor()
+        cursor.execute("UPDATE queries SET account_id = ? WHERE id = ?", (account_id, query_id))
+        self.conn.commit()
+        return cursor.rowcount > 0
 
     def set_query_interval(self, query_id: str, min_interval: int | None) -> bool:
         """Set the minimum download interval (hours) for a query. None to use type default."""
@@ -217,25 +293,26 @@ class FlexDatabase:
 
     def get_query_info(self, query_id: str) -> dict | None:
         cursor = self.conn.cursor()
-        cursor.execute("SELECT id, name, type, min_interval FROM queries WHERE id = ?", (query_id,))
+        cursor.execute("SELECT id, name, type, min_interval, account_id FROM queries WHERE id = ?", (query_id,))
         result = cursor.fetchone()
         if not result:
             return None
-        return {"id": result[0], "name": result[1], "type": result[2] or "activity", "min_interval": result[3]}
+        return {"id": result[0], "name": result[1], "type": result[2] or "activity", "min_interval": result[3], "account_id": result[4]}
 
     def get_all_queries_with_status(self) -> list[dict]:
         """Get all queries with their latest download status."""
         cursor = self.conn.cursor()
-        cursor.execute("SELECT id, name, type, min_interval FROM queries ORDER BY added_on")
+        cursor.execute("SELECT id, name, type, min_interval, account_id FROM queries ORDER BY added_on")
         queries = cursor.fetchall()
 
         result = []
-        for query_id, name, query_type, min_interval in queries:
+        for query_id, name, query_type, min_interval, account_id in queries:
             query_info = {
                 "id": query_id,
                 "name": name,
                 "type": query_type or "activity",
                 "min_interval": min_interval,
+                "account_id": account_id,
                 "latest_request": None,
             }
             latest = self.get_latest_request(query_id)
@@ -244,6 +321,22 @@ class FlexDatabase:
             result.append(query_info)
 
         return result
+
+    # --- Token Resolution ---
+
+    def resolve_token(self, query_id: str) -> str | None:
+        """Resolve the token for a query.
+
+        Resolution order:
+        1. query.account_id → accounts.token
+        2. Global token (config)
+        """
+        query_info = self.get_query_info(query_id)
+        if query_info and query_info.get("account_id"):
+            account_token = self.get_token_for_account(query_info["account_id"])
+            if account_token:
+                return account_token
+        return self.get_token()
 
     # --- Download history (internal) ---
 
@@ -305,11 +398,11 @@ class FlexDatabase:
         Resolution: per-query min_interval > type-based default from type_defaults.
         """
         cursor = self.conn.cursor()
-        cursor.execute("SELECT id, name, type, min_interval FROM queries")
+        cursor.execute("SELECT id, name, type, min_interval, account_id FROM queries")
         all_queries = cursor.fetchall()
 
         result = []
-        for query_id, name, query_type, min_interval in all_queries:
+        for query_id, name, query_type, min_interval, account_id in all_queries:
             query_type = query_type or "activity"
             hours = min_interval if min_interval is not None else type_defaults.get(query_type, 6)
             cutoff_time = (datetime.now() - timedelta(hours=hours)).isoformat()
@@ -327,7 +420,7 @@ class FlexDatabase:
             )
 
             if not cursor.fetchone():
-                result.append({"id": query_id, "name": name, "type": query_type, "min_interval": min_interval})
+                result.append({"id": query_id, "name": name, "type": query_type, "min_interval": min_interval, "account_id": account_id})
 
         return result
 

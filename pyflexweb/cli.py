@@ -11,6 +11,7 @@ import click
 from .database import FlexDatabase, resolve_data_dir
 from .handlers import (
     VALID_QUERY_TYPES,
+    handle_account_command,
     handle_config_command,
     handle_download_command,
     handle_query_command,
@@ -106,6 +107,56 @@ def token_unset(ctx):
     return handle_token_command(args, ctx.obj["db"])
 
 
+# --- Account commands ---
+
+
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def account(ctx):
+    """Manage IBKR accounts (multi-account support)."""
+    if ctx.invoked_subcommand is None:
+        args = type("Args", (), {"subcommand": "list"})
+        return handle_account_command(args, ctx.obj["db"])
+
+
+@account.command("add")
+@click.argument("account_id")
+@click.option("--name", default=None, help="Display name for the account (e.g. 'Cerabella')")
+@click.option("--token", "token_value", required=True, help="IBKR Flex token for this account")
+@click.pass_context
+def account_add(ctx, account_id, name, token_value):
+    """Add an IBKR account with its own Flex token."""
+    args = type("Args", (), {"subcommand": "add", "account_id": account_id, "name": name, "token": token_value})
+    return handle_account_command(args, ctx.obj["db"])
+
+
+@account.command("list")
+@click.pass_context
+def account_list(ctx):
+    """List all configured accounts."""
+    args = type("Args", (), {"subcommand": "list"})
+    return handle_account_command(args, ctx.obj["db"])
+
+
+@account.command("remove")
+@click.argument("account_id")
+@click.pass_context
+def account_remove(ctx, account_id):
+    """Remove an account. Queries using it will fall back to the global token."""
+    args = type("Args", (), {"subcommand": "remove", "account_id": account_id})
+    return handle_account_command(args, ctx.obj["db"])
+
+
+@account.command("rename")
+@click.argument("account_id")
+@click.argument("new_name")
+@click.pass_context
+def account_rename(ctx, account_id, new_name):
+    """Rename an account."""
+    args = type("Args", (), {"subcommand": "rename", "account_id": account_id, "name": new_name})
+    return handle_account_command(args, ctx.obj["db"])
+
+
 # --- Config commands ---
 
 
@@ -179,11 +230,12 @@ def query(ctx, json_output):
 @click.option("--name", required=True, help="A descriptive name for the query")
 @click.option("--type", "query_type", type=click.Choice(VALID_QUERY_TYPES), default="activity", help="Query type (default: activity)")
 @click.option("--min-interval", type=int, default=None, help="Min hours between downloads (overrides type default)")
+@click.option("--account", default=None, help="Account ID to associate with this query")
 @click.pass_context
-def query_add(ctx, query_id, name, query_type, min_interval):
+def query_add(ctx, query_id, name, query_type, min_interval, account):
     """Add a new query ID."""
     args = type(
-        "Args", (), {"subcommand": "add", "query_id": query_id, "name": name, "query_type": query_type, "min_interval": min_interval}
+        "Args", (), {"subcommand": "add", "query_id": query_id, "name": name, "query_type": query_type, "min_interval": min_interval, "account": account}
     )
     return handle_query_command(args, ctx.obj["db"])
 
