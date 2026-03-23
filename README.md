@@ -27,6 +27,39 @@ pyflexweb query add 123456 --name "Daily activity"
 pyflexweb query add 789012 --name "Trade confirmations" --type trade-confirmation
 ```
 
+## Multi-Account Support
+
+If you have multiple IBKR accounts, each with its own Flex token, you can
+configure per-account tokens and associate queries with specific accounts:
+
+```bash
+# Add accounts
+pyflexweb account add U1317359 --name "Cerabella" --token YOUR_TOKEN_1
+pyflexweb account add U11049821 --name "CCUK" --token YOUR_TOKEN_2
+
+# List configured accounts
+pyflexweb account list
+
+# Add queries tied to specific accounts
+pyflexweb query add 111111 --name "Cerabella Activity" --account U1317359
+pyflexweb query add 222222 --name "CCUK Activity" --account U11049821
+
+# Rename or remove accounts
+pyflexweb account rename U1317359 "Main Account"
+pyflexweb account remove U11049821
+```
+
+### Token Resolution
+
+When downloading, pyflexweb resolves the token for each query:
+
+1. Look up the account associated with the query
+2. Use that account's token
+3. If the account has no token configured, the query is skipped with a clear error
+
+Every query must be associated with an account (`--account` is required when adding queries).
+Legacy global tokens are automatically migrated to a placeholder account on first run.
+
 ## Usage
 
 ```bash
@@ -46,8 +79,11 @@ pyflexweb status
 ## Commands
 
 ```
-token set|get|unset          Manage IBKR token
-query add <id> --name "..."  Add query (--type activity|trade-confirmation, --min-interval N)
+token set|get|unset          Manage IBKR token (global fallback)
+account add <id> --token T   Add account (--name optional)
+account list                 List configured accounts
+account remove|rename <id>   Remove or rename an account
+query add <id> --name "..."  Add query (--type, --min-interval, --account)
 query remove|rename <id>     Remove or rename a query
 query interval <id> [hours]  Set per-query download interval (--unset to revert)
 query list [--json]          List queries with status

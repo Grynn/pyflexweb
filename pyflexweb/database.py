@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 
 import platformdirs
 
+PLACEHOLDER_ACCOUNT_ID = "__default__"
+
 
 def resolve_data_dir() -> str:
     """Resolve pyflexweb data directory with fallback chain.
@@ -27,7 +29,7 @@ def resolve_data_dir() -> str:
 class FlexDatabase:
     """Manages the local database for tokens, queries, and download history."""
 
-    DB_VERSION = 4  # Increment when schema changes
+    DB_VERSION = 6  # Increment when schema changes
 
     def __init__(self, db_dir: str = None):
         self.db_dir = db_dir if db_dir is not None else resolve_data_dir()
@@ -41,6 +43,7 @@ class FlexDatabase:
 
     def _init_db(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA foreign_keys = ON")
         cursor = conn.cursor()
 
         cursor.execute(
@@ -54,10 +57,27 @@ class FlexDatabase:
 
         cursor.execute(
             """
+        CREATE TABLE IF NOT EXISTS accounts (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            token TEXT NOT NULL,
+            added_on DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+        )
+
+        # NOTE: This CREATE TABLE only runs on a *fresh* database (version 0).
+        # For existing DBs the migration path in _check_migration recreates the
+        # table with the correct NOT NULL constraint.  New DBs include it here.
+        cursor.execute(
+            """
         CREATE TABLE IF NOT EXISTS queries (
             id TEXT PRIMARY KEY,
             name TEXT,
-            added_on DATETIME DEFAULT CURRENT_TIMESTAMP
+            added_on DATETIME DEFAULT CURRENT_TIMESTAMP,
+            min_interval INTEGER,
+            type TEXT DEFAULT 'activity',
+            account_id TEXT NOT NULL REFERENCES accounts(id)
         )
         """
         )
@@ -133,13 +153,120 @@ class FlexDatabase:
             except sqlite3.OperationalError:
                 pass
 
+        if current_version < 5:
+            # Create accounts table (if not already created by _init_db above)
+            cursor.execute(
+                """
+            CREATE TABLE IF NOT EXISTS accounts (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                token TEXT NOT NULL,
+                added_on DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+            )
+            conn.commit()
+
+            # Add nullable account_id column to queries (temporary; made NOT NULL in v6)
+            try:
+                cursor.execute("ALTER TABLE queries ADD COLUMN account_id TEXT REFERENCES accounts(id)")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        if current_version < 6:
+            # Check the current queries schema to decide if we need to rebuild.
+            cursor.execute("PRAGMA table_info(queries)")
+            col_info = {row[1]: row for row in cursor.fetchall()}
+            needs_rebuild = (
+                "account_id" not in col_info  # column missing entirely
+                or col_info["account_id"][3] == 0  # column exists but is nullable
+            )
+
+            if needs_rebuild:
+                # If there is a legacy global token, create a placeholder account.
+                cursor.execute("SELECT value FROM config WHERE key = 'token'")
+                token_row = cursor.fetchone()
+                global_token = token_row[0] if token_row else None
+
+                if global_token:
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO accounts (id, name, token) VALUES (?, NULL, ?)",
+                        (PLACEHOLDER_ACCOUNT_ID, global_token),
+                    )
+                    conn.commit()
+
+                placeholder_exists = bool(cursor.execute("SELECT 1 FROM accounts WHERE id = ?", (PLACEHOLDER_ACCOUNT_ID,)).fetchone())
+
+                # Fetch existing rows before rebuild
+                has_account_col = "account_id" in col_info
+                if has_account_col:
+                    cursor.execute("SELECT id, name, added_on, min_interval, type, account_id FROM queries")
+                else:
+                    cursor.execute("SELECT id, name, added_on, min_interval, type FROM queries")
+                existing_queries = cursor.fetchall()
+
+                # Recreate table with NOT NULL constraint (SQLite requires full rebuild)
+                cursor.execute("DROP TABLE IF EXISTS queries_old")
+                cursor.execute("ALTER TABLE queries RENAME TO queries_old")
+                cursor.execute(
+                    """
+                CREATE TABLE queries (
+                    id TEXT PRIMARY KEY,
+                    name TEXT,
+                    added_on DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    min_interval INTEGER,
+                    type TEXT DEFAULT 'activity',
+                    account_id TEXT NOT NULL REFERENCES accounts(id)
+                )
+                """
+                )
+
+                for row in existing_queries:
+                    qid, qname, added_on, min_interval, qtype = row[:5]
+                    account_id = row[5] if has_account_col else None
+                    if account_id is None:
+                        if placeholder_exists:
+                            account_id = PLACEHOLDER_ACCOUNT_ID
+                        else:
+                            # No account available — drop this orphan query
+                            continue
+                    cursor.execute(
+                        "INSERT INTO queries (id, name, added_on, min_interval, type, account_id) VALUES (?, ?, ?, ?, ?, ?)",
+                        (qid, qname, added_on, min_interval, qtype or "activity", account_id),
+                    )
+
+                cursor.execute("DROP TABLE queries_old")
+                conn.commit()
+
         cursor.execute(
             "INSERT OR REPLACE INTO config VALUES (?, ?)",
             ("db_version", str(self.DB_VERSION)),
         )
         conn.commit()
 
-    # --- Token ---
+    # --- Placeholder account warning ---
+
+    def get_placeholder_warning(self) -> str | None:
+        """Return a warning string if the migration placeholder account is still unnamed.
+
+        Only warns about PLACEHOLDER_ACCOUNT_ID — not about user-created accounts
+        without a display name (those are intentional).
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT id FROM accounts WHERE id = ? AND name IS NULL",
+            (PLACEHOLDER_ACCOUNT_ID,),
+        )
+        if not cursor.fetchone():
+            return None
+        return (
+            f"⚠️  Warning: migration placeholder account '{PLACEHOLDER_ACCOUNT_ID}' has no display name.\n"
+            f"   This was created automatically from your legacy global token.\n"
+            f'   Run: pyflexweb account rename {PLACEHOLDER_ACCOUNT_ID} "<DisplayName>"  to name it.'
+        )
+
+    # --- Token (legacy — kept for migration compatibility only) ---
 
     def set_token(self, token: str) -> None:
         cursor = self.conn.cursor()
@@ -181,15 +308,95 @@ class FlexDatabase:
         self.conn.commit()
         return cursor.rowcount > 0
 
-    # --- Queries ---
+    # --- Accounts ---
 
-    def add_query(self, query_id: str, name: str, query_type: str = "activity", min_interval: int | None = None) -> None:
+    def add_account(self, account_id: str, name: str | None, token: str) -> None:
+        """Add or update an account."""
         cursor = self.conn.cursor()
         cursor.execute(
-            "INSERT OR REPLACE INTO queries (id, name, type, min_interval) VALUES (?, ?, ?, ?)",
-            (query_id, name, query_type, min_interval),
+            "INSERT OR REPLACE INTO accounts (id, name, token) VALUES (?, ?, ?)",
+            (account_id, name, token),
         )
         self.conn.commit()
+
+    def get_account(self, account_id: str) -> dict | None:
+        """Get account info by ID."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, name, token, added_on FROM accounts WHERE id = ?", (account_id,))
+        result = cursor.fetchone()
+        if not result:
+            return None
+        return {"id": result[0], "name": result[1], "token": result[2], "added_on": result[3]}
+
+    def list_accounts(self) -> list[dict]:
+        """List all accounts."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, name, token, added_on FROM accounts ORDER BY added_on")
+        return [{"id": r[0], "name": r[1], "token": r[2], "added_on": r[3]} for r in cursor.fetchall()]
+
+    def remove_account(self, account_id: str) -> bool | None:
+        """Remove an account.
+
+        Returns:
+            True  — account removed successfully
+            False — blocked: queries still reference this account
+            None  — account not found
+        """
+        cursor = self.conn.cursor()
+        # Check the account exists first
+        cursor.execute("SELECT COUNT(*) FROM accounts WHERE id = ?", (account_id,))
+        if cursor.fetchone()[0] == 0:
+            return None  # not found
+        # Check for associated queries
+        cursor.execute("SELECT COUNT(*) FROM queries WHERE account_id = ?", (account_id,))
+        if cursor.fetchone()[0] > 0:
+            return False  # blocked — caller must reassign or remove queries first
+        cursor.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+        self.conn.commit()
+        return True
+
+    def rename_account(self, account_id: str, new_name: str) -> bool:
+        """Rename an account."""
+        cursor = self.conn.cursor()
+        cursor.execute("UPDATE accounts SET name = ? WHERE id = ?", (new_name, account_id))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def get_token_for_account(self, account_id: str) -> str | None:
+        """Get the token for a specific account."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT token FROM accounts WHERE id = ?", (account_id,))
+        result = cursor.fetchone()
+        return result[0] if result else None
+
+    # --- Queries ---
+
+    def add_query(
+        self,
+        query_id: str,
+        name: str,
+        query_type: str = "activity",
+        min_interval: int | None = None,
+        account_id: str | None = None,
+    ) -> None:
+        """Add or update a query. account_id is required."""
+        if account_id is None:
+            raise ValueError("account_id is required — every query must belong to an account")
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO queries (id, name, type, min_interval, account_id) VALUES (?, ?, ?, ?, ?)",
+            (query_id, name, query_type, min_interval, account_id),
+        )
+        self.conn.commit()
+
+    def set_query_account(self, query_id: str, account_id: str) -> bool:
+        """Set the account association for a query. account_id is required."""
+        if not account_id:
+            raise ValueError("account_id cannot be empty")
+        cursor = self.conn.cursor()
+        cursor.execute("UPDATE queries SET account_id = ? WHERE id = ?", (account_id, query_id))
+        self.conn.commit()
+        return cursor.rowcount > 0
 
     def set_query_interval(self, query_id: str, min_interval: int | None) -> bool:
         """Set the minimum download interval (hours) for a query. None to use type default."""
@@ -217,25 +424,26 @@ class FlexDatabase:
 
     def get_query_info(self, query_id: str) -> dict | None:
         cursor = self.conn.cursor()
-        cursor.execute("SELECT id, name, type, min_interval FROM queries WHERE id = ?", (query_id,))
+        cursor.execute("SELECT id, name, type, min_interval, account_id FROM queries WHERE id = ?", (query_id,))
         result = cursor.fetchone()
         if not result:
             return None
-        return {"id": result[0], "name": result[1], "type": result[2] or "activity", "min_interval": result[3]}
+        return {"id": result[0], "name": result[1], "type": result[2] or "activity", "min_interval": result[3], "account_id": result[4]}
 
     def get_all_queries_with_status(self) -> list[dict]:
         """Get all queries with their latest download status."""
         cursor = self.conn.cursor()
-        cursor.execute("SELECT id, name, type, min_interval FROM queries ORDER BY added_on")
+        cursor.execute("SELECT id, name, type, min_interval, account_id FROM queries ORDER BY added_on")
         queries = cursor.fetchall()
 
         result = []
-        for query_id, name, query_type, min_interval in queries:
+        for query_id, name, query_type, min_interval, account_id in queries:
             query_info = {
                 "id": query_id,
                 "name": name,
                 "type": query_type or "activity",
                 "min_interval": min_interval,
+                "account_id": account_id,
                 "latest_request": None,
             }
             latest = self.get_latest_request(query_id)
@@ -244,6 +452,22 @@ class FlexDatabase:
             result.append(query_info)
 
         return result
+
+    # --- Token Resolution ---
+
+    def resolve_token(self, query_id: str) -> str | None:
+        """Resolve the token for a query via its account.
+
+        Every query must have an account_id; the token comes from that account.
+        Returns None if the account or its token cannot be found.
+        """
+        query_info = self.get_query_info(query_id)
+        if not query_info:
+            return None
+        account_id = query_info.get("account_id")
+        if not account_id:
+            return None
+        return self.get_token_for_account(account_id)
 
     # --- Download history (internal) ---
 
@@ -300,16 +524,13 @@ class FlexDatabase:
         return self.get_request_info(result[0])
 
     def get_queries_needing_download(self, type_defaults: dict[str, int]) -> list[dict]:
-        """Get queries that haven't been downloaded within their effective interval.
-
-        Resolution: per-query min_interval > type-based default from type_defaults.
-        """
+        """Get queries that haven't been downloaded within their effective interval."""
         cursor = self.conn.cursor()
-        cursor.execute("SELECT id, name, type, min_interval FROM queries")
+        cursor.execute("SELECT id, name, type, min_interval, account_id FROM queries")
         all_queries = cursor.fetchall()
 
         result = []
-        for query_id, name, query_type, min_interval in all_queries:
+        for query_id, name, query_type, min_interval, account_id in all_queries:
             query_type = query_type or "activity"
             hours = min_interval if min_interval is not None else type_defaults.get(query_type, 6)
             cutoff_time = (datetime.now() - timedelta(hours=hours)).isoformat()
@@ -327,7 +548,7 @@ class FlexDatabase:
             )
 
             if not cursor.fetchone():
-                result.append({"id": query_id, "name": name, "type": query_type, "min_interval": min_interval})
+                result.append({"id": query_id, "name": name, "type": query_type, "min_interval": min_interval, "account_id": account_id})
 
         return result
 
