@@ -145,23 +145,24 @@ class TestClickCli(unittest.TestCase):
         args = self.mock_account_handler.call_args[0][0]
         self.assertEqual(args.subcommand, "list")
 
-    def test_account_remove_command(self):
-        """Test the account remove command."""
-        result = self.runner.invoke(cli, ["account", "remove", "U111"])
+    def test_account_rm_command(self):
+        """Test the account rm command."""
+        result = self.runner.invoke(cli, ["account", "rm", "U111"])
         self.assertEqual(result.exit_code, 0)
         self.mock_account_handler.assert_called_once()
         args = self.mock_account_handler.call_args[0][0]
         self.assertEqual(args.subcommand, "remove")
         self.assertEqual(args.account_id, "U111")
 
-    def test_account_rename_command(self):
-        """Test the account rename command."""
-        result = self.runner.invoke(cli, ["account", "rename", "U111", "New Name"])
+    def test_account_edit_command(self):
+        """Test the account edit command."""
+        result = self.runner.invoke(cli, ["account", "edit", "U111", "--new-id", "U222", "--name", "New Name"])
         self.assertEqual(result.exit_code, 0)
         self.mock_account_handler.assert_called_once()
         args = self.mock_account_handler.call_args[0][0]
-        self.assertEqual(args.subcommand, "rename")
+        self.assertEqual(args.subcommand, "edit")
         self.assertEqual(args.account_id, "U111")
+        self.assertEqual(args.new_id, "U222")
         self.assertEqual(args.name, "New Name")
 
     # --- Query CLI tests ---

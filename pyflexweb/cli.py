@@ -138,22 +138,23 @@ def account_list(ctx):
     return handle_account_command(args, ctx.obj["db"])
 
 
-@account.command("remove")
+@account.command("rm")
 @click.argument("account_id")
 @click.pass_context
-def account_remove(ctx, account_id):
+def account_rm(ctx, account_id):
     """Remove an account. Blocked if any queries still reference it."""
     args = type("Args", (), {"subcommand": "remove", "account_id": account_id})
     return handle_account_command(args, ctx.obj["db"])
 
 
-@account.command("rename")
+@account.command("edit")
 @click.argument("account_id")
-@click.argument("new_name")
+@click.option("--new-id", default=None, help="New account ID")
+@click.option("--name", default=None, help="New display name for the account")
 @click.pass_context
-def account_rename(ctx, account_id, new_name):
-    """Rename an account."""
-    args = type("Args", (), {"subcommand": "rename", "account_id": account_id, "name": new_name})
+def account_edit(ctx, account_id, new_id, name):
+    """Edit an account (change ID and/or name)."""
+    args = type("Args", (), {"subcommand": "edit", "account_id": account_id, "new_id": new_id, "name": name})
     return handle_account_command(args, ctx.obj["db"])
 
 

@@ -25,13 +25,6 @@ def _effective_interval(query_info: dict) -> int:
     return TYPE_INTERVAL_DEFAULTS.get(query_info.get("type", "activity"), 6)
 
 
-def _warn_placeholder(db: FlexDatabase) -> None:
-    """Print a warning if any unnamed (placeholder) accounts are present."""
-    warning = db.get_placeholder_warning()
-    if warning:
-        print(warning)
-
-
 def handle_token_command(args: dict[str, Any], db: FlexDatabase) -> int:
     """Handle the 'token' command and its subcommands.
 
@@ -78,12 +71,11 @@ def handle_account_command(args: dict[str, Any], db: FlexDatabase) -> int:
             print("No accounts configured. Add one with 'pyflexweb account add <id> --token <token>'")
             return 0
 
-        _warn_placeholder(db)
         print(f"{'ID':<20} {'Name':<25} {'Token':<20} {'Added':<20}")
         print(f"{'-' * 20} {'-' * 25} {'-' * 20} {'-' * 20}")
         for acct in accounts:
             acct_id = acct["id"]
-            name = acct["name"] or "⚠️  (unnamed)"
+            name = acct["name"] or "(unnamed)"
             token_display = acct["token"][:8] + "..." if len(acct["token"]) > 8 else acct["token"]
             added = acct["added_on"][:19] if acct["added_on"] else "-"
             print(f"{acct_id:<20} {name:<25} {token_display:<20} {added:<20}")
@@ -102,16 +94,26 @@ def handle_account_command(args: dict[str, Any], db: FlexDatabase) -> int:
             print(f"Account '{args.account_id}' removed.")
         return 0
 
-    elif args.subcommand == "rename":
-        if db.rename_account(args.account_id, args.name):
-            print(f"Account {args.account_id} renamed to '{args.name}'.")
+    elif args.subcommand == "edit":
+        new_id = getattr(args, "new_id", None)
+        new_name = getattr(args, "name", None)
+        if not new_id and new_name is None:
+            print("Nothing to update. Use --new-id and/or --name.")
+            return 1
+        if db.update_account(args.account_id, new_id=new_id, new_name=new_name):
+            parts = [f"Account '{args.account_id}' updated."]
+            if new_id:
+                parts.append(f"ID changed to '{new_id}'.")
+            if new_name is not None:
+                parts.append(f"Name set to '{new_name}'.")
+            print(" ".join(parts))
         else:
-            print(f"Account {args.account_id} not found.")
+            print(f"Account '{args.account_id}' not found.")
             return 1
         return 0
 
     else:
-        print("Missing subcommand. Use 'add', 'list', 'remove', or 'rename'.")
+        print("Missing subcommand. Use 'add', 'list', 'rm', or 'edit'.")
         return 1
 
 
@@ -186,9 +188,6 @@ def handle_query_command(args: dict[str, Any], db: FlexDatabase) -> int:
                 print("No query IDs found. Add one with 'pyflexweb query add <query_id> --name \"Query name\" --account <account_id>'")
             return 0
 
-        if not json_output:
-            _warn_placeholder(db)
-
         if json_output:
             output = []
             for query in queries:
@@ -247,7 +246,6 @@ def handle_query_command(args: dict[str, Any], db: FlexDatabase) -> int:
 
 def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
     """Handle the 'download' command."""
-    _warn_placeholder(db)
     # Determine which queries to download
     if args.query == "all":
         if args.force:
@@ -336,8 +334,9 @@ def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
             output_file = os.path.join(output_dir, args.output)
         else:
             today = datetime.now().strftime("%Y%m%d")
-            safe_desc = "".join(c if c.isalnum() else "_" for c in (query_info["name"] or query_id))
-            output_file = os.path.join(output_dir, f"{safe_desc}_{today}.xml")
+            safe_name = "".join(c if c.isalnum() else "_" for c in (query_info["name"] or query_id))
+            account_id = query_info.get("account_id") or "unknown"
+            output_file = os.path.join(output_dir, f"{account_id}_{query_id}_{safe_name}_{today}.xml")
 
         # Poll for the report
         print(f"  Polling (max {args.max_attempts} attempts, {args.poll_interval}s interval)...")

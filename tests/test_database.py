@@ -309,29 +309,29 @@ class TestAccountOperations(unittest.TestCase):
     def test_get_account_not_found(self):
         self.assertIsNone(self.db.get_account("nonexistent"))
 
-    def test_placeholder_warning_unnamed(self):
-        """Warning fires only for the __default__ placeholder, not arbitrary unnamed accounts."""
-        # A user-created account with no name should NOT trigger the warning
-        self.db.add_account("U111", None, "t")
-        self.assertIsNone(self.db.get_placeholder_warning())
+    def test_update_account_name(self):
+        self.db.add_account("U111", "Old", "t")
+        self.assertTrue(self.db.update_account("U111", new_name="New"))
+        self.assertEqual(self.db.get_account("U111")["name"], "New")
 
-        # The migration placeholder account WITHOUT a name SHOULD trigger the warning
-        self.db.add_account("__default__", None, "t2")
-        w = self.db.get_placeholder_warning()
-        self.assertIsNotNone(w)
-        self.assertIn("__default__", w)
+    def test_update_account_id(self):
+        """Changing account ID should cascade to queries."""
+        self.db.add_account("__default__", "Acct", "tok")
+        self.db.add_query("Q1", "Query", account_id="__default__")
+        self.assertTrue(self.db.update_account("__default__", new_id="U12345"))
+        self.assertIsNone(self.db.get_account("__default__"))
+        self.assertIsNotNone(self.db.get_account("U12345"))
+        self.assertEqual(self.db.get_query_info("Q1")["account_id"], "U12345")
 
-    def test_placeholder_warning_named_no_warning(self):
-        """No warning when placeholder has been given a display name."""
-        self.db.add_account("__default__", "My Main Account", "t")
-        self.assertIsNone(self.db.get_placeholder_warning())
+    def test_update_account_id_and_name(self):
+        self.db.add_account("OLD", None, "t")
+        self.assertTrue(self.db.update_account("OLD", new_id="NEW", new_name="Named"))
+        acct = self.db.get_account("NEW")
+        self.assertIsNotNone(acct)
+        self.assertEqual(acct["name"], "Named")
 
-    def test_placeholder_warning_clears_after_rename(self):
-        """Warning disappears after renaming the placeholder."""
-        self.db.add_account("__default__", None, "t")
-        self.assertIsNotNone(self.db.get_placeholder_warning())
-        self.db.rename_account("__default__", "Named")
-        self.assertIsNone(self.db.get_placeholder_warning())
+    def test_update_account_not_found(self):
+        self.assertFalse(self.db.update_account("U999", new_name="X"))
 
 
 class TestQueryAccountIntegration(unittest.TestCase):
@@ -424,6 +424,7 @@ class TestDatabaseMigration(unittest.TestCase):
         db_path = os.path.join(self.temp_db_dir, "status.db")
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
+        c.execute("PRAGMA foreign_keys = ON")
         c.execute("CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         c.execute(
             "CREATE TABLE queries (id TEXT PRIMARY KEY, name TEXT,"
@@ -433,13 +434,18 @@ class TestDatabaseMigration(unittest.TestCase):
         c.execute(
             "CREATE TABLE requests (request_id TEXT PRIMARY KEY, query_id TEXT,"
             " status TEXT, requested_at DATETIME, completed_at DATETIME,"
-            " last_updated DATETIME, output_path TEXT)"
+            " last_updated DATETIME, output_path TEXT,"
+            " FOREIGN KEY (query_id) REFERENCES queries(id))"
         )
         c.execute("INSERT INTO config VALUES ('db_version', '4')")
         if with_token:
             c.execute("INSERT INTO config VALUES ('token', 'global_tok')")
         if with_query:
             c.execute("INSERT INTO queries (id, name, type) VALUES ('Q1', 'Old Query', 'activity')")
+            c.execute(
+                "INSERT INTO requests (request_id, query_id, status, requested_at)"
+                " VALUES ('REQ1', 'Q1', 'completed', '2025-01-01T00:00:00')"
+            )
         conn.commit()
         conn.close()
 
@@ -462,9 +468,15 @@ class TestDatabaseMigration(unittest.TestCase):
         self.assertEqual(q["account_id"], PLACEHOLDER_ACCOUNT_ID)
         self.assertEqual(db.resolve_token("Q1"), "global_tok")
 
-        self.assertIsNotNone(db.get_placeholder_warning())
-        db.rename_account(PLACEHOLDER_ACCOUNT_ID, "Mine")
-        self.assertIsNone(db.get_placeholder_warning())
+        # The request row should survive the migration intact
+        req = db.get_request_info("REQ1")
+        self.assertIsNotNone(req)
+        self.assertEqual(req["query_id"], "Q1")
+        self.assertEqual(req["status"], "completed")
+
+        # A backup file should have been created
+        backup_path = os.path.join(self.temp_db_dir, "status.db.v4.bak")
+        self.assertTrue(os.path.exists(backup_path))
 
         # account_id column is NOT NULL
         c.execute("PRAGMA table_info(queries)")
@@ -473,14 +485,27 @@ class TestDatabaseMigration(unittest.TestCase):
 
         db.close()
 
-    def test_migration_v4_no_token_orphans_dropped(self):
-        """v4 without global token: orphan queries dropped (can't satisfy NOT NULL)."""
+    def test_migration_v4_no_token_orphans_preserved(self):
+        """v4 without global token: orphan queries preserved via placeholder with __MISSING__ token."""
         self._make_v4_db(with_token=False, with_query=True)
         with patch("platformdirs.user_data_dir", return_value=self.temp_db_dir):
             db = FlexDatabase()
 
-        self.assertEqual(db.list_accounts(), [])
-        self.assertIsNone(db.get_query_info("Q1"))
+        # Placeholder account created with marker token
+        placeholder = db.get_account(PLACEHOLDER_ACCOUNT_ID)
+        self.assertIsNotNone(placeholder)
+        self.assertEqual(placeholder["token"], "__MISSING__")
+
+        # Query preserved and assigned to placeholder
+        q = db.get_query_info("Q1")
+        self.assertIsNotNone(q)
+        self.assertEqual(q["account_id"], PLACEHOLDER_ACCOUNT_ID)
+
+        # Request row also preserved
+        req = db.get_request_info("REQ1")
+        self.assertIsNotNone(req)
+        self.assertEqual(req["query_id"], "Q1")
+
         db.close()
 
 

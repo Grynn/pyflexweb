@@ -19,7 +19,6 @@ class TestTokenHandler(unittest.TestCase):
 
     def setUp(self):
         self.mock_db = MagicMock()
-        self.mock_db.get_placeholder_warning.return_value = None
 
     def test_token_set(self):
         """Test setting a legacy token."""
@@ -86,7 +85,6 @@ class TestAccountHandler(unittest.TestCase):
 
     def setUp(self):
         self.mock_db = MagicMock()
-        self.mock_db.get_placeholder_warning.return_value = None
 
     def test_account_add(self):
         """Test adding an account."""
@@ -119,19 +117,18 @@ class TestAccountHandler(unittest.TestCase):
             mock_print.assert_called_once_with("No accounts configured. Add one with 'pyflexweb account add <id> --token <token>'")
 
     def test_account_list_with_accounts(self):
-        """Test listing accounts, including unnamed warning."""
+        """Test listing accounts."""
         args = MagicMock(subcommand="list")
         self.mock_db.list_accounts.return_value = [
             {"id": "U111", "name": "Account A", "token": "long_token_value_here", "added_on": "2025-01-01T00:00:00"},
             {"id": "U222", "name": None, "token": "short", "added_on": "2025-02-01T00:00:00"},
         ]
-        self.mock_db.get_placeholder_warning.return_value = "warn"
 
         with patch("builtins.print") as mock_print:
             result = handle_account_command(args, self.mock_db)
             self.assertEqual(result, 0)
-            # warning + header + separator + 2 accounts = 5 calls
-            self.assertEqual(mock_print.call_count, 5)
+            # header + separator + 2 accounts = 4 calls
+            self.assertEqual(mock_print.call_count, 4)
 
     def test_account_remove_success(self):
         """Test removing an account."""
@@ -166,26 +163,44 @@ class TestAccountHandler(unittest.TestCase):
             mock_print.assert_any_call("Cannot remove account 'U999': queries are still associated with it.")
             mock_print.assert_any_call("Reassign or remove those queries first (pyflexweb query list).")
 
-    def test_account_rename_success(self):
-        """Test renaming an account."""
-        args = type("Args", (), {"subcommand": "rename", "account_id": "U111", "name": "New Name"})
-        self.mock_db.rename_account.return_value = True
+    def test_account_edit_name(self):
+        """Test editing an account name."""
+        args = type("Args", (), {"subcommand": "edit", "account_id": "U111", "new_id": None, "name": "New Name"})
+        self.mock_db.update_account.return_value = True
 
-        with patch("builtins.print") as mock_print:
+        with patch("builtins.print") as _:
             result = handle_account_command(args, self.mock_db)
             self.assertEqual(result, 0)
-            self.mock_db.rename_account.assert_called_once_with("U111", "New Name")
-            mock_print.assert_called_once_with("Account U111 renamed to 'New Name'.")
+            self.mock_db.update_account.assert_called_once_with("U111", new_id=None, new_name="New Name")
 
-    def test_account_rename_not_found(self):
-        """Test renaming a non-existent account."""
-        args = type("Args", (), {"subcommand": "rename", "account_id": "U999", "name": "Name"})
-        self.mock_db.rename_account.return_value = False
+    def test_account_edit_id(self):
+        """Test changing an account ID."""
+        args = type("Args", (), {"subcommand": "edit", "account_id": "__default__", "new_id": "U12345", "name": None})
+        self.mock_db.update_account.return_value = True
+
+        with patch("builtins.print") as _:
+            result = handle_account_command(args, self.mock_db)
+            self.assertEqual(result, 0)
+            self.mock_db.update_account.assert_called_once_with("__default__", new_id="U12345", new_name=None)
+
+    def test_account_edit_not_found(self):
+        """Test editing a non-existent account."""
+        args = type("Args", (), {"subcommand": "edit", "account_id": "U999", "new_id": None, "name": "Name"})
+        self.mock_db.update_account.return_value = False
 
         with patch("builtins.print") as mock_print:
             result = handle_account_command(args, self.mock_db)
             self.assertEqual(result, 1)
-            mock_print.assert_called_once_with("Account U999 not found.")
+            mock_print.assert_called_once_with("Account 'U999' not found.")
+
+    def test_account_edit_nothing_to_update(self):
+        """Test editing without providing --new-id or --name."""
+        args = type("Args", (), {"subcommand": "edit", "account_id": "U111", "new_id": None, "name": None})
+
+        with patch("builtins.print") as mock_print:
+            result = handle_account_command(args, self.mock_db)
+            self.assertEqual(result, 1)
+            mock_print.assert_called_once_with("Nothing to update. Use --new-id and/or --name.")
 
     def test_account_invalid_subcommand(self):
         """Test invalid account subcommand."""
@@ -194,7 +209,7 @@ class TestAccountHandler(unittest.TestCase):
         with patch("builtins.print") as mock_print:
             result = handle_account_command(args, self.mock_db)
             self.assertEqual(result, 1)
-            mock_print.assert_called_once_with("Missing subcommand. Use 'add', 'list', 'remove', or 'rename'.")
+            mock_print.assert_called_once_with("Missing subcommand. Use 'add', 'list', 'rm', or 'edit'.")
 
 
 class TestQueryHandler(unittest.TestCase):
@@ -202,7 +217,6 @@ class TestQueryHandler(unittest.TestCase):
 
     def setUp(self):
         self.mock_db = MagicMock()
-        self.mock_db.get_placeholder_warning.return_value = None
 
     def test_query_add_requires_account(self):
         """Query add must require --account."""
@@ -482,7 +496,7 @@ class TestDownloadHandler(unittest.TestCase):
 
     def setUp(self):
         self.mock_db = MagicMock()
-        self.mock_db.get_placeholder_warning.return_value = None
+
         self.mock_client_patcher = patch("pyflexweb.handlers.IBKRFlexClient")
         self.mock_client_class = self.mock_client_patcher.start()
         self.mock_client = MagicMock()

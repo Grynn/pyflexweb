@@ -1,6 +1,7 @@
 """Database module for storing tokens, queries, and download history."""
 
 import os
+import shutil
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -31,7 +32,7 @@ class FlexDatabase:
 
     DB_VERSION = 6  # Increment when schema changes
 
-    def __init__(self, db_dir: str = None):
+    def __init__(self, db_dir: str | None = None):
         self.db_dir = db_dir if db_dir is not None else resolve_data_dir()
         os.makedirs(self.db_dir, exist_ok=True)
         self.db_path = os.path.join(self.db_dir, "status.db")
@@ -111,6 +112,15 @@ class FlexDatabase:
         if current_version >= self.DB_VERSION:
             return
 
+        # --- Backup before migration ---
+        if os.path.exists(self.db_path):
+            backup_path = f"{self.db_path}.v{current_version}.bak"
+            shutil.copy2(self.db_path, backup_path)
+
+        # Temporarily disable FK enforcement so table renames/drops
+        # don't trigger foreign-key violations during migration.
+        conn.execute("PRAGMA foreign_keys = OFF")
+
         if current_version < 1:
             try:
                 cursor.execute("ALTER TABLE requests ADD COLUMN last_updated DATETIME")
@@ -189,22 +199,28 @@ class FlexDatabase:
                 token_row = cursor.fetchone()
                 global_token = token_row[0] if token_row else None
 
-                if global_token:
-                    cursor.execute(
-                        "INSERT OR IGNORE INTO accounts (id, name, token) VALUES (?, NULL, ?)",
-                        (PLACEHOLDER_ACCOUNT_ID, global_token),
-                    )
-                    conn.commit()
-
-                placeholder_exists = bool(cursor.execute("SELECT 1 FROM accounts WHERE id = ?", (PLACEHOLDER_ACCOUNT_ID,)).fetchone())
-
-                # Fetch existing rows before rebuild
+                # Fetch existing rows before rebuild to check for orphans
                 has_account_col = "account_id" in col_info
                 if has_account_col:
                     cursor.execute("SELECT id, name, added_on, min_interval, type, account_id FROM queries")
                 else:
                     cursor.execute("SELECT id, name, added_on, min_interval, type FROM queries")
                 existing_queries = cursor.fetchall()
+
+                # Determine whether any queries will need a placeholder account
+                has_orphans = any((row[5] if has_account_col and len(row) > 5 else None) is None for row in existing_queries)
+
+                if global_token or has_orphans:
+                    # Use the global token when available; otherwise fall back to
+                    # a marker so queries are preserved (the user can update it later).
+                    placeholder_token = global_token or "__MISSING__"
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO accounts (id, name, token) VALUES (?, NULL, ?)",
+                        (PLACEHOLDER_ACCOUNT_ID, placeholder_token),
+                    )
+                    conn.commit()
+
+                cursor.execute("SELECT 1 FROM accounts WHERE id = ?", (PLACEHOLDER_ACCOUNT_ID,)).fetchone()
 
                 # Recreate table with NOT NULL constraint (SQLite requires full rebuild)
                 cursor.execute("DROP TABLE IF EXISTS queries_old")
@@ -226,11 +242,7 @@ class FlexDatabase:
                     qid, qname, added_on, min_interval, qtype = row[:5]
                     account_id = row[5] if has_account_col else None
                     if account_id is None:
-                        if placeholder_exists:
-                            account_id = PLACEHOLDER_ACCOUNT_ID
-                        else:
-                            # No account available — drop this orphan query
-                            continue
+                        account_id = PLACEHOLDER_ACCOUNT_ID
                     cursor.execute(
                         "INSERT INTO queries (id, name, added_on, min_interval, type, account_id) VALUES (?, ?, ?, ?, ?, ?)",
                         (qid, qname, added_on, min_interval, qtype or "activity", account_id),
@@ -245,26 +257,34 @@ class FlexDatabase:
         )
         conn.commit()
 
-    # --- Placeholder account warning ---
+        # Re-enable FK enforcement after migration is complete.
+        conn.execute("PRAGMA foreign_keys = ON")
 
-    def get_placeholder_warning(self) -> str | None:
-        """Return a warning string if the migration placeholder account is still unnamed.
+    def update_account(self, account_id: str, new_id: str | None = None, new_name: str | None = None) -> bool:
+        """Update an account's ID and/or name.
 
-        Only warns about PLACEHOLDER_ACCOUNT_ID — not about user-created accounts
-        without a display name (those are intentional).
+        Returns True if the account was found and updated, False if not found.
+        When changing the ID, updates all query FK references as well.
         """
         cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT id FROM accounts WHERE id = ? AND name IS NULL",
-            (PLACEHOLDER_ACCOUNT_ID,),
-        )
+        cursor.execute("SELECT 1 FROM accounts WHERE id = ?", (account_id,))
         if not cursor.fetchone():
-            return None
-        return (
-            f"⚠️  Warning: migration placeholder account '{PLACEHOLDER_ACCOUNT_ID}' has no display name.\n"
-            f"   This was created automatically from your legacy global token.\n"
-            f'   Run: pyflexweb account rename {PLACEHOLDER_ACCOUNT_ID} "<DisplayName>"  to name it.'
-        )
+            return False
+
+        if new_id and new_id != account_id:
+            # Temporarily disable FK so we can re-point queries
+            self.conn.execute("PRAGMA foreign_keys = OFF")
+            cursor.execute("UPDATE accounts SET id = ? WHERE id = ?", (new_id, account_id))
+            cursor.execute("UPDATE queries SET account_id = ? WHERE account_id = ?", (new_id, account_id))
+            self.conn.commit()
+            self.conn.execute("PRAGMA foreign_keys = ON")
+            account_id = new_id  # for subsequent name update
+
+        if new_name is not None:
+            cursor.execute("UPDATE accounts SET name = ? WHERE id = ?", (new_name, account_id))
+            self.conn.commit()
+
+        return True
 
     # --- Token (legacy — kept for migration compatibility only) ---
 
@@ -356,11 +376,8 @@ class FlexDatabase:
         return True
 
     def rename_account(self, account_id: str, new_name: str) -> bool:
-        """Rename an account."""
-        cursor = self.conn.cursor()
-        cursor.execute("UPDATE accounts SET name = ? WHERE id = ?", (new_name, account_id))
-        self.conn.commit()
-        return cursor.rowcount > 0
+        """Rename an account (convenience wrapper around update_account)."""
+        return self.update_account(account_id, new_name=new_name)
 
     def get_token_for_account(self, account_id: str) -> str | None:
         """Get the token for a specific account."""
