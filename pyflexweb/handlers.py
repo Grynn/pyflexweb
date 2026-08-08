@@ -15,6 +15,10 @@ TYPE_INTERVAL_DEFAULTS = {
     "trade-confirmation": 1,
 }
 
+# IBKR throttles bursts of Flex statement generation requests even when the
+# individual queries satisfy their own minimum download intervals.
+INTER_QUERY_DELAY_SECONDS = 2 * 60
+
 VALID_QUERY_TYPES = list(TYPE_INTERVAL_DEFAULTS.keys())
 
 
@@ -286,6 +290,7 @@ def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
             return 1
 
     overall_success = True
+    requests_issued = 0
 
     for query_info in queries_to_download:
         query_id = query_info["id"]
@@ -321,8 +326,16 @@ def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
                     print("  Use --force to download again.")
                     continue
 
-        # Request report from IBKR
+        # Request report from IBKR. Space actual network requests—not skipped
+        # queries—so multi-query runs do not trip the token's burst throttle.
+        # Waiting before each request after the first avoids both an initial
+        # delay and an unnecessary trailing delay.
+        if requests_issued:
+            print(f"  Waiting {INTER_QUERY_DELAY_SECONDS}s before the next Flex request...")
+            time.sleep(INTER_QUERY_DELAY_SECONDS)
+
         client = IBKRFlexClient(token)
+        requests_issued += 1
         request_id = client.request_report(query_id)
         if not request_id:
             print("  Failed to request report.")

@@ -5,6 +5,7 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 from pyflexweb.handlers import (
+    INTER_QUERY_DELAY_SECONDS,
     TYPE_INTERVAL_DEFAULTS,
     handle_account_command,
     handle_config_command,
@@ -646,6 +647,46 @@ class TestDownloadHandler(unittest.TestCase):
                 self.mock_db.get_all_queries_with_status.assert_called_once()
                 # resolve_token should be called for each query
                 self.assertEqual(self.mock_db.resolve_token.call_count, 2)
+
+    def test_download_all_waits_two_minutes_between_requests_only(self):
+        """Multi-query runs pace IBKR requests without initial/trailing waits."""
+        args = MagicMock(query="all", force=True, output=None, output_dir=".", max_attempts=1, poll_interval=1)
+        self.mock_db.get_all_queries_with_status.return_value = [
+            {"id": "111", "name": "First", "type": "activity", "min_interval": None, "account_id": None},
+            {"id": "222", "name": "Second", "type": "activity", "min_interval": None, "account_id": None},
+            {"id": "333", "name": "Third", "type": "activity", "min_interval": None, "account_id": None},
+        ]
+        self.mock_db.resolve_token.return_value = "test_token"
+
+        events: list[str] = []
+
+        def request_report(query_id: str) -> str:
+            events.append(f"request:{query_id}")
+            return f"REQ-{query_id}"
+
+        def record_sleep(seconds: float) -> None:
+            if seconds == INTER_QUERY_DELAY_SECONDS:
+                events.append(f"delay:{seconds}")
+
+        self.mock_client.request_report.side_effect = request_report
+        self.mock_client.get_report.return_value = "<xml>data</xml>"
+        self.mock_sleep.side_effect = record_sleep
+
+        with patch("builtins.open", unittest.mock.mock_open()):
+            with patch("builtins.print"):
+                result = handle_download_command(args, self.mock_db)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            events,
+            [
+                "request:111",
+                f"delay:{INTER_QUERY_DELAY_SECONDS}",
+                "request:222",
+                f"delay:{INTER_QUERY_DELAY_SECONDS}",
+                "request:333",
+            ],
+        )
 
     def test_download_mixed_tokens(self):
         """Test download where some queries have account tokens and some use global."""
