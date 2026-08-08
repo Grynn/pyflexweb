@@ -76,6 +76,11 @@ pyflexweb download --force
 pyflexweb status
 ```
 
+When more than one query is due, `download` waits two minutes between actual
+Flex statement-generation requests to avoid IBKR's token-level burst throttle.
+There is no initial or trailing delay, and skipped/up-to-date queries do not
+add a wait.
+
 ## Commands
 
 ```
