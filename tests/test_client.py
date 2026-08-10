@@ -1,11 +1,12 @@
 """Tests for the IBKR Flex Web Service client."""
 
+import socket
 import unittest
 from unittest.mock import MagicMock, patch
 
 import requests
 
-from pyflexweb.client import IBKRFlexClient
+from pyflexweb.client import DNS_MAX_RETRIES, IBKRFlexClient
 
 
 class TestIBKRFlexClient(unittest.TestCase):
@@ -67,6 +68,53 @@ class TestIBKRFlexClient(unittest.TestCase):
                 # We just need to check if the right message was printed to stderr
                 self.assertTrue(mock_stderr.write.called)
                 self.assertIn("Network error: Network error", "".join([call[0][0] for call in mock_stderr.write.call_args_list]))
+
+    def test_request_report_retries_dns_failure_seven_times_then_succeeds(self):
+        """DNS failures get seven retries without reissuing a Flex query later."""
+        dns_error = requests.exceptions.ConnectionError(socket.gaierror(-3, "Temporary failure in name resolution"))
+        mock_response = MagicMock()
+        mock_response.text = """
+        <FlexStatementResponse>
+            <Status>Success</Status>
+            <ReferenceCode>REQ123</ReferenceCode>
+        </FlexStatementResponse>
+        """
+        mock_response.raise_for_status = MagicMock()
+
+        side_effects = [dns_error] * DNS_MAX_RETRIES + [mock_response]
+        with patch("pyflexweb.client.requests.get", side_effect=side_effects) as mock_get:
+            with patch("pyflexweb.client.time.sleep") as mock_sleep:
+                request_id = self.client.request_report("123456")
+
+        self.assertEqual(request_id, "REQ123")
+        self.assertEqual(mock_get.call_count, DNS_MAX_RETRIES + 1)
+        self.assertEqual(mock_sleep.call_count, DNS_MAX_RETRIES)
+        self.assertEqual(
+            [call.args[0] for call in mock_sleep.call_args_list],
+            [1, 2, 4, 8, 16, 30, 30],
+        )
+
+    def test_request_report_does_not_retry_non_dns_network_error(self):
+        """Only DNS failures receive the extra retry budget."""
+        error = requests.exceptions.ConnectTimeout("connection timed out")
+        with patch("pyflexweb.client.requests.get", side_effect=error) as mock_get:
+            with patch("pyflexweb.client.time.sleep") as mock_sleep:
+                request_id = self.client.request_report("123456")
+
+        self.assertIsNone(request_id)
+        self.assertEqual(mock_get.call_count, 1)
+        mock_sleep.assert_not_called()
+
+    def test_network_error_redacts_flex_token(self):
+        """Requests errors must not leak the Flex token through the URL."""
+        error = requests.exceptions.ConnectTimeout("failed for https://example.test/path?t=test_token&q=123456&v=3")
+        with patch("pyflexweb.client.requests.get", side_effect=error):
+            with patch("sys.stderr") as mock_stderr:
+                self.client.request_report("123456")
+
+        output = "".join(call[0][0] for call in mock_stderr.write.call_args_list)
+        self.assertNotIn("test_token", output)
+        self.assertIn("t=<redacted>", output)
 
     def test_request_report_parse_error(self):
         """Test requesting a report with XML parse error."""
@@ -147,6 +195,22 @@ class TestIBKRFlexClient(unittest.TestCase):
                 # We just need to check if the right message was printed to stderr
                 self.assertTrue(mock_stderr.write.called)
                 self.assertIn("Network error: Network error", "".join([call[0][0] for call in mock_stderr.write.call_args_list]))
+
+    def test_get_report_retries_dns_failure_seven_times_then_succeeds(self):
+        """Statement retrieval receives the same DNS-only retry policy."""
+        dns_error = requests.exceptions.ConnectionError(socket.gaierror(-3, "Temporary failure in name resolution"))
+        mock_response = MagicMock()
+        mock_response.text = "<FlexQueryResponse>XML report content</FlexQueryResponse>"
+        mock_response.raise_for_status = MagicMock()
+
+        side_effects = [dns_error] * DNS_MAX_RETRIES + [mock_response]
+        with patch("pyflexweb.client.requests.get", side_effect=side_effects) as mock_get:
+            with patch("pyflexweb.client.time.sleep") as mock_sleep:
+                report_xml = self.client.get_report("REQ123")
+
+        self.assertEqual(report_xml, "<FlexQueryResponse>XML report content</FlexQueryResponse>")
+        self.assertEqual(mock_get.call_count, DNS_MAX_RETRIES + 1)
+        self.assertEqual(mock_sleep.call_count, DNS_MAX_RETRIES)
 
     def test_get_report_parse_error(self):
         """Test getting a report with XML parse error in an error response."""
