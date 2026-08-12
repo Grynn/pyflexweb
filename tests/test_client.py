@@ -6,7 +6,11 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
-from pyflexweb.client import DNS_MAX_RETRIES, IBKRFlexClient
+from pyflexweb.client import (
+    DNS_MAX_RETRIES,
+    REPORT_GENERATION_RETRY_DELAYS_SECONDS,
+    IBKRFlexClient,
+)
 
 
 class TestIBKRFlexClient(unittest.TestCase):
@@ -57,6 +61,58 @@ class TestIBKRFlexClient(unittest.TestCase):
                 self.assertIn(
                     "Error requesting report: Invalid query ID", "".join([call[0][0] for call in mock_stderr.write.call_args_list])
                 )
+
+    def test_request_report_retries_transient_generation_failure_then_succeeds(self):
+        """IBKR's explicit try-again-shortly response gets a bounded retry."""
+        transient = MagicMock()
+        transient.text = """
+        <FlexStatementResponse>
+            <Status>Fail</Status>
+            <ErrorCode>1012</ErrorCode>
+            <ErrorMessage>Statement could not be generated at this time. Please try again shortly.</ErrorMessage>
+        </FlexStatementResponse>
+        """
+        transient.raise_for_status = MagicMock()
+        success = MagicMock()
+        success.text = """
+        <FlexStatementResponse>
+            <Status>Success</Status>
+            <ReferenceCode>REQ123</ReferenceCode>
+        </FlexStatementResponse>
+        """
+        success.raise_for_status = MagicMock()
+
+        with patch("pyflexweb.client.requests.get", side_effect=[transient, success]) as mock_get:
+            with patch("pyflexweb.client.time.sleep") as mock_sleep:
+                request_id = self.client.request_report("123456")
+
+        self.assertEqual(request_id, "REQ123")
+        self.assertEqual(mock_get.call_count, 2)
+        mock_sleep.assert_called_once_with(REPORT_GENERATION_RETRY_DELAYS_SECONDS[0])
+
+    def test_request_report_stops_after_transient_retry_budget(self):
+        """Persistent provider generation failures remain a visible failure."""
+        transient = MagicMock()
+        transient.text = """
+        <FlexStatementResponse>
+            <Status>Fail</Status>
+            <ErrorCode>1012</ErrorCode>
+            <ErrorMessage>Statement could not be generated at this time. Please try again shortly.</ErrorMessage>
+        </FlexStatementResponse>
+        """
+        transient.raise_for_status = MagicMock()
+
+        attempts = len(REPORT_GENERATION_RETRY_DELAYS_SECONDS) + 1
+        with patch("pyflexweb.client.requests.get", return_value=transient) as mock_get:
+            with patch("pyflexweb.client.time.sleep") as mock_sleep:
+                request_id = self.client.request_report("123456")
+
+        self.assertIsNone(request_id)
+        self.assertEqual(mock_get.call_count, attempts)
+        self.assertEqual(
+            [call.args[0] for call in mock_sleep.call_args_list],
+            list(REPORT_GENERATION_RETRY_DELAYS_SECONDS),
+        )
 
     def test_request_report_network_error(self):
         """Test requesting a report with network error."""

@@ -10,6 +10,8 @@ import requests
 
 DNS_MAX_RETRIES = 7
 DNS_RETRY_DELAYS_SECONDS = (1, 2, 4, 8, 16, 30, 30)
+REPORT_GENERATION_RETRY_DELAYS_SECONDS = (30, 60)
+REPORT_GENERATION_TRANSIENT_MESSAGE = "statement could not be generated at this time. please try again shortly."
 
 
 def _is_dns_error(error: BaseException) -> bool:
@@ -91,28 +93,43 @@ class IBKRFlexClient:
         """Request a report from IBKR and return the request ID if successful."""
         url = f"{self.REQUEST_URL}?t={self.token}&q={query_id}&v=3"
 
-        try:
-            response = _get_with_dns_retries(url)
-            response.raise_for_status()
+        for attempt in range(len(REPORT_GENERATION_RETRY_DELAYS_SECONDS) + 1):
+            try:
+                response = _get_with_dns_retries(url)
+                response.raise_for_status()
 
-            # Parse the XML response
-            root = ET.fromstring(response.text)
-            status = root.find(".//Status").text
+                # Parse the XML response
+                root = ET.fromstring(response.text)
+                status = root.find(".//Status").text
 
-            if status == "Success":
-                request_id = root.find(".//ReferenceCode").text
-                return request_id
-            else:
-                error = root.find(".//ErrorMessage").text
+                if status == "Success":
+                    request_id = root.find(".//ReferenceCode").text
+                    return request_id
+
+                error_node = root.find(".//ErrorMessage")
+                error = error_node.text if error_node is not None else "Unknown Flex error"
+                normalized = " ".join(error.lower().split())
+                if normalized == REPORT_GENERATION_TRANSIENT_MESSAGE and attempt < len(REPORT_GENERATION_RETRY_DELAYS_SECONDS):
+                    delay = REPORT_GENERATION_RETRY_DELAYS_SECONDS[attempt]
+                    print(
+                        "IBKR report generation temporarily unavailable; "
+                        f"retry {attempt + 1}/{len(REPORT_GENERATION_RETRY_DELAYS_SECONDS)} in {delay}s...",
+                        file=sys.stderr,
+                    )
+                    time.sleep(delay)
+                    continue
+
                 print(f"Error requesting report: {error}", file=sys.stderr)
                 return None
 
-        except requests.exceptions.RequestException as e:
-            print(f"Network error: {_safe_network_error(e)}", file=sys.stderr)
-            return None
-        except ET.ParseError as e:
-            print(f"Error parsing response: {e}", file=sys.stderr)
-            return None
+            except requests.exceptions.RequestException as e:
+                print(f"Network error: {_safe_network_error(e)}", file=sys.stderr)
+                return None
+            except ET.ParseError as e:
+                print(f"Error parsing response: {e}", file=sys.stderr)
+                return None
+
+        raise AssertionError("unreachable")
 
     def get_report(self, request_id: str) -> str | None:
         """Get a report using the request ID. Returns the XML content if successful."""
