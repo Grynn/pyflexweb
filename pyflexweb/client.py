@@ -10,7 +10,10 @@ import requests
 
 DNS_MAX_RETRIES = 7
 DNS_RETRY_DELAYS_SECONDS = (1, 2, 4, 8, 16, 30, 30)
-REPORT_GENERATION_RETRY_DELAYS_SECONDS = (30, 60)
+# IBKR's explicit "try again shortly" response has persisted beyond the old
+# 90-second window in production.  Keep this bounded below the daily-sync
+# scheduler ceiling while allowing a transient generation outage to clear.
+REPORT_GENERATION_RETRY_DELAYS_SECONDS = (30, 60, 120, 240)
 REPORT_GENERATION_TRANSIENT_MESSAGE = "statement could not be generated at this time. please try again shortly."
 
 
