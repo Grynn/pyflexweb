@@ -81,10 +81,14 @@ Flex statement-generation requests to avoid IBKR's token-level burst throttle.
 There is no initial or trailing delay, and skipped/up-to-date queries do not
 add a wait.
 
-DNS/name-resolution failures are retried seven times for the same request with
-bounded backoff (1, 2, 4, 8, 16, 30, and 30 seconds). Other network failures
-and Flex API errors still fail closed; DNS retries do not count as a new query
-and do not alter the two-minute pacing between distinct statements.
+Every IBKR GET has a 30s connect / 120s read timeout, so a connection IBKR
+accepts but never answers fails instead of hanging indefinitely (previously
+unbounded — a `download` once hung over 4 hours and had to be killed by hand).
+DNS/name-resolution failures and connect/read timeouts are retried seven times
+for the same request with bounded backoff (1, 2, 4, 8, 16, 30, and 30
+seconds). Other network failures and Flex API errors still fail closed; these
+retries do not count as a new query and do not alter the two-minute pacing
+between distinct statements.
 
 ## Commands
 

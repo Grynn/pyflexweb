@@ -8,7 +8,9 @@ import requests
 
 from pyflexweb.client import (
     DNS_MAX_RETRIES,
+    DNS_RETRY_DELAYS_SECONDS,
     REPORT_GENERATION_RETRY_DELAYS_SECONDS,
+    REQUEST_TIMEOUT,
     IBKRFlexClient,
 )
 
@@ -150,9 +152,9 @@ class TestIBKRFlexClient(unittest.TestCase):
             [1, 2, 4, 8, 16, 30, 30],
         )
 
-    def test_request_report_does_not_retry_non_dns_network_error(self):
-        """Only DNS failures receive the extra retry budget."""
-        error = requests.exceptions.ConnectTimeout("connection timed out")
+    def test_request_report_does_not_retry_non_retryable_network_error(self):
+        """Only DNS failures and timeouts receive the extra retry budget."""
+        error = requests.exceptions.SSLError("certificate verify failed")
         with patch("pyflexweb.client.requests.get", side_effect=error) as mock_get:
             with patch("pyflexweb.client.time.sleep") as mock_sleep:
                 request_id = self.client.request_report("123456")
@@ -161,9 +163,61 @@ class TestIBKRFlexClient(unittest.TestCase):
         self.assertEqual(mock_get.call_count, 1)
         mock_sleep.assert_not_called()
 
+    def test_request_report_passes_connect_and_read_timeout(self):
+        """Every IBKR GET must bound both the connect and read phases.
+
+        Regression guard for the 2026-08-19 incident: a `download` hung >4h on
+        an ESTABLISHED read with no socket timeout and had to be killed by hand.
+        """
+        mock_response = MagicMock()
+        mock_response.text = """
+        <FlexStatementResponse>
+            <Status>Success</Status>
+            <ReferenceCode>REQ123</ReferenceCode>
+        </FlexStatementResponse>
+        """
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("pyflexweb.client.requests.get", return_value=mock_response) as mock_get:
+            self.client.request_report("123456")
+
+        _, kwargs = mock_get.call_args
+        self.assertEqual(kwargs.get("timeout"), REQUEST_TIMEOUT)
+
+    def test_request_report_retries_read_timeout_then_succeeds(self):
+        """A hung/never-responding read now gets a bounded retry instead of hanging forever."""
+        timeout_error = requests.exceptions.ReadTimeout("Read timed out.")
+        mock_response = MagicMock()
+        mock_response.text = """
+        <FlexStatementResponse>
+            <Status>Success</Status>
+            <ReferenceCode>REQ123</ReferenceCode>
+        </FlexStatementResponse>
+        """
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("pyflexweb.client.requests.get", side_effect=[timeout_error, mock_response]) as mock_get:
+            with patch("pyflexweb.client.time.sleep") as mock_sleep:
+                request_id = self.client.request_report("123456")
+
+        self.assertEqual(request_id, "REQ123")
+        self.assertEqual(mock_get.call_count, 2)
+        mock_sleep.assert_called_once_with(DNS_RETRY_DELAYS_SECONDS[0])
+
+    def test_request_report_stops_after_timeout_retry_budget(self):
+        """A connection IBKR never answers eventually surfaces as a failure, not a hang."""
+        timeout_error = requests.exceptions.ConnectTimeout("connection timed out")
+        with patch("pyflexweb.client.requests.get", side_effect=timeout_error) as mock_get:
+            with patch("pyflexweb.client.time.sleep") as mock_sleep:
+                request_id = self.client.request_report("123456")
+
+        self.assertIsNone(request_id)
+        self.assertEqual(mock_get.call_count, DNS_MAX_RETRIES + 1)
+        self.assertEqual(mock_sleep.call_count, DNS_MAX_RETRIES)
+
     def test_network_error_redacts_flex_token(self):
         """Requests errors must not leak the Flex token through the URL."""
-        error = requests.exceptions.ConnectTimeout("failed for https://example.test/path?t=test_token&q=123456&v=3")
+        error = requests.exceptions.SSLError("failed for https://example.test/path?t=test_token&q=123456&v=3")
         with patch("pyflexweb.client.requests.get", side_effect=error):
             with patch("sys.stderr") as mock_stderr:
                 self.client.request_report("123456")
@@ -267,6 +321,33 @@ class TestIBKRFlexClient(unittest.TestCase):
         self.assertEqual(report_xml, "<FlexQueryResponse>XML report content</FlexQueryResponse>")
         self.assertEqual(mock_get.call_count, DNS_MAX_RETRIES + 1)
         self.assertEqual(mock_sleep.call_count, DNS_MAX_RETRIES)
+
+    def test_get_report_passes_connect_and_read_timeout(self):
+        """Statement retrieval must bound both the connect and read phases too."""
+        mock_response = MagicMock()
+        mock_response.text = "<FlexQueryResponse>XML report content</FlexQueryResponse>"
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("pyflexweb.client.requests.get", return_value=mock_response) as mock_get:
+            self.client.get_report("REQ123")
+
+        _, kwargs = mock_get.call_args
+        self.assertEqual(kwargs.get("timeout"), REQUEST_TIMEOUT)
+
+    def test_get_report_retries_read_timeout_then_succeeds(self):
+        """Statement retrieval receives the same bounded timeout-retry policy."""
+        timeout_error = requests.exceptions.ReadTimeout("Read timed out.")
+        mock_response = MagicMock()
+        mock_response.text = "<FlexQueryResponse>XML report content</FlexQueryResponse>"
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("pyflexweb.client.requests.get", side_effect=[timeout_error, mock_response]) as mock_get:
+            with patch("pyflexweb.client.time.sleep") as mock_sleep:
+                report_xml = self.client.get_report("REQ123")
+
+        self.assertEqual(report_xml, "<FlexQueryResponse>XML report content</FlexQueryResponse>")
+        self.assertEqual(mock_get.call_count, 2)
+        mock_sleep.assert_called_once_with(DNS_RETRY_DELAYS_SECONDS[0])
 
     def test_get_report_parse_error(self):
         """Test getting a report with XML parse error in an error response."""

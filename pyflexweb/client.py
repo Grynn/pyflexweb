@@ -8,6 +8,16 @@ import xml.etree.ElementTree as ET
 
 import requests
 
+# IBKR has been observed to accept the TCP connection and then never send a
+# byte back: a `download` hung >4h on an ESTABLISHED read with no timeout
+# (2026-08-19, killed manually). Bound both the connect and read phases so a
+# stuck request fails instead of hanging forever. The read timeout applies
+# per-chunk (time since the last byte), not to the whole request, so this
+# does not cut off a slow-but-progressing transfer.
+CONNECT_TIMEOUT_SECONDS = 30
+READ_TIMEOUT_SECONDS = 120
+REQUEST_TIMEOUT = (CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS)
+
 DNS_MAX_RETRIES = 7
 DNS_RETRY_DELAYS_SECONDS = (1, 2, 4, 8, 16, 30, 30)
 # IBKR's explicit "try again shortly" response has persisted beyond the old
@@ -60,22 +70,40 @@ def _is_dns_error(error: BaseException) -> bool:
     )
 
 
+def _is_retryable_network_error(error: BaseException) -> bool:
+    """Return True for DNS failures and connect/read timeouts — worth a bounded retry.
+
+    Everything else (refused connections, TLS errors, HTTP-level failures)
+    still fails closed on the first attempt.
+    """
+    if isinstance(error, requests.exceptions.Timeout):
+        return True
+    return _is_dns_error(error)
+
+
 def _safe_network_error(error: BaseException) -> str:
     """Redact the Flex token if Requests includes the URL in an exception."""
     return re.sub(r"([?&]t=)[^&\s)]+", r"\1<redacted>", str(error))
 
 
 def _get_with_dns_retries(url: str) -> requests.Response:
-    """GET once normally, then retry DNS failures seven times."""
+    """GET with a connect/read timeout, retrying DNS failures and timeouts.
+
+    Both failure modes share the same bounded backoff schedule (seven
+    retries, up to 30s apart) so a transient blip — a resolver hiccup or a
+    connection IBKR accepted but never answered — clears without a human
+    having to kill a hung process.
+    """
     for attempt in range(DNS_MAX_RETRIES + 1):
         try:
-            return requests.get(url)
+            return requests.get(url, timeout=REQUEST_TIMEOUT)
         except requests.exceptions.RequestException as error:
-            if not _is_dns_error(error) or attempt == DNS_MAX_RETRIES:
+            if not _is_retryable_network_error(error) or attempt == DNS_MAX_RETRIES:
                 raise
             delay = DNS_RETRY_DELAYS_SECONDS[attempt]
+            reason = "Request timed out" if isinstance(error, requests.exceptions.Timeout) else "DNS resolution failed"
             print(
-                f"DNS resolution failed; retry {attempt + 1}/{DNS_MAX_RETRIES} in {delay}s...",
+                f"{reason}; retry {attempt + 1}/{DNS_MAX_RETRIES} in {delay}s...",
                 file=sys.stderr,
             )
             time.sleep(delay)
