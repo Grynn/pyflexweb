@@ -457,7 +457,7 @@ class TestDatabaseMigration(unittest.TestCase):
 
         c = db.conn.cursor()
         c.execute("SELECT value FROM config WHERE key = 'db_version'")
-        self.assertEqual(c.fetchone()[0], "6")
+        self.assertEqual(c.fetchone()[0], str(FlexDatabase.DB_VERSION))
 
         placeholder = db.get_account(PLACEHOLDER_ACCOUNT_ID)
         self.assertIsNotNone(placeholder)

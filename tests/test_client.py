@@ -11,7 +11,9 @@ from pyflexweb.client import (
     DNS_RETRY_DELAYS_SECONDS,
     REPORT_GENERATION_RETRY_DELAYS_SECONDS,
     REQUEST_TIMEOUT,
+    FlexError,
     IBKRFlexClient,
+    classify_flex_error,
 )
 
 
@@ -363,6 +365,101 @@ class TestIBKRFlexClient(unittest.TestCase):
                 self.assertIsNone(report_xml)
                 # The exact error message will vary, just check that stderr.write was called
                 self.assertTrue(mock_stderr.write.called)
+
+
+def _flex_body(status: str, code: str | None, message: str | None) -> MagicMock:
+    parts = [f"<Status>{status}</Status>"]
+    if code is not None:
+        parts.append(f"<ErrorCode>{code}</ErrorCode>")
+    if message is not None:
+        parts.append(f"<ErrorMessage>{message}</ErrorMessage>")
+    resp = MagicMock()
+    resp.text = "<FlexStatementResponse>" + "".join(parts) + "</FlexStatementResponse>"
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
+class TestFlexErrorParsing(unittest.TestCase):
+    """ErrorCode/ErrorMessage parsing, classification and client.last_error."""
+
+    def setUp(self):
+        self.client = IBKRFlexClient("test_token")
+
+    def _send(self, response):
+        with patch("pyflexweb.client.requests.get", return_value=response), patch("sys.stderr") as err:
+            with patch("pyflexweb.client.time.sleep"):
+                result = self.client.request_report("123")
+        return result, "".join(c[0][0] for c in err.write.call_args_list)
+
+    def test_1012_token_expired(self):
+        result, stderr = self._send(_flex_body("Fail", "1012", "Token has expired."))
+        self.assertIsNone(result)
+        self.assertEqual(self.client.last_error, FlexError(code="1012", message="Token has expired.", kind="token"))
+        # Legacy line, byte for byte (external wrappers parse it).
+        self.assertIn("Error requesting report: Token has expired.\n", stderr)
+        self.assertNotIn("test_token", stderr)
+
+    def test_1018_rate_limit(self):
+        msg = "Too many requests have been made from this token. Please try again shortly."
+        self._send(_flex_body("Fail", "1018", msg))
+        self.assertEqual(self.client.last_error, FlexError(code="1018", message=msg, kind="rate_limit"))
+
+    def test_error_message_only(self):
+        self._send(_flex_body("Fail", None, "Token is invalid."))
+        self.assertEqual(self.client.last_error, FlexError(code=None, message="Token is invalid.", kind="token"))
+        self._send(_flex_body("Fail", None, "Something else went wrong"))
+        self.assertEqual(self.client.last_error.kind, "other")
+
+    def test_1019_getstatement_not_ready(self):
+        msg = "Statement generation in progress. Please try again shortly."
+        with patch("pyflexweb.client.requests.get", return_value=_flex_body("Warn", "1019", msg)), patch("sys.stderr") as err:
+            self.assertIsNone(self.client.get_report("REF"))
+        self.assertEqual(self.client.last_error, FlexError(code="1019", message=msg, kind="not_ready"))
+        self.assertIn(f"Error retrieving report: {msg}", "".join(c[0][0] for c in err.write.call_args_list))
+
+    def test_success_clears_last_error(self):
+        self._send(_flex_body("Fail", "1012", "Token has expired."))
+        ok = MagicMock(text="<FlexStatementResponse><Status>Success</Status><ReferenceCode>R1</ReferenceCode></FlexStatementResponse>")
+        self.assertEqual(self._send(ok)[0], "R1")
+        self.assertIsNone(self.client.last_error)
+
+    def test_network_and_parse_errors(self):
+        with patch("pyflexweb.client.requests.get", side_effect=requests.exceptions.ConnectionError("refused")), patch("sys.stderr"):
+            self.client.request_report("123")
+        self.assertEqual((self.client.last_error.code, self.client.last_error.kind), (None, "other"))
+        self._send(MagicMock(text="<ErrorCode>broken"))
+        self.assertEqual((self.client.last_error.code, self.client.last_error.kind), (None, "other"))
+
+    def test_transient_retry_unchanged_and_never_token(self):
+        transient = "Statement could not be generated at this time. Please try again shortly."
+        with patch("pyflexweb.client.requests.get", return_value=_flex_body("Fail", "1012", transient)) as get:
+            with patch("pyflexweb.client.time.sleep"), patch("sys.stderr"):
+                self.assertIsNone(self.client.request_report("123"))
+        self.assertEqual(get.call_count, len(REPORT_GENERATION_RETRY_DELAYS_SECONDS) + 1)
+        self.assertEqual(self.client.last_error.kind, "not_ready")
+
+    def test_classification_table(self):
+        cases = {
+            ("1011", None): "token",
+            ("1012", None): "token",
+            ("1013", None): "token",
+            ("1015", None): "token",
+            ("1018", None): "rate_limit",
+            ("1001", None): "not_ready",
+            ("1004", None): "not_ready",
+            ("1009", None): "not_ready",
+            ("1019", None): "not_ready",
+            ("1021", None): "not_ready",
+            ("1003", None): "other",
+            ("1014", None): "other",
+            ("1020", None): "other",
+            (None, "TOKEN HAS EXPIRED."): "token",
+            (None, "Token is invalid."): "token",
+            (None, None): "other",
+        }
+        for (code, message), kind in cases.items():
+            with self.subTest(code=code, message=message):
+                self.assertEqual(classify_flex_error(code, message), kind)
 
 
 if __name__ == "__main__":

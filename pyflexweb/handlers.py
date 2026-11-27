@@ -1,13 +1,18 @@
 """Command handlers for CLI commands."""
 
 import json
+import math
 import os
+import re
+import sys
 import time
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from .client import IBKRFlexClient
-from .database import FlexDatabase
+from .client import FlexError, IBKRFlexClient
+from .database import UTC_TIMESTAMP_FORMAT, FlexDatabase
+from .locks import acquire_file_lock, release_file_lock
 
 # Default minimum interval between downloads (hours) per query type
 TYPE_INTERVAL_DEFAULTS = {
@@ -20,6 +25,108 @@ TYPE_INTERVAL_DEFAULTS = {
 INTER_QUERY_DELAY_SECONDS = 2 * 60
 
 VALID_QUERY_TYPES = list(TYPE_INTERVAL_DEFAULTS.keys())
+
+# `download` exit codes (also documented in `download --help` and the README).
+EXIT_OK = 0
+EXIT_QUERY_FAILED = 1
+EXIT_TOKEN_REJECTED = 3  # wins over EXIT_QUERY_FAILED
+EXIT_LOCKED = 4  # another download holds the lock; nothing was requested
+
+# Cross-process lock so overlapping `download` runs never send requests on the
+# same token without the inter-request pacing. Lives next to status.db.
+DOWNLOAD_LOCK_FILENAME = "download.lock"
+LOCK_POLL_SECONDS = 1
+
+# IBKR's portal shows token expiry in US Eastern time.
+EASTERN = ZoneInfo("America/New_York")
+
+_EXPIRY_RE = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})"
+    r"(?:[ T](?P<h>\d{2}):(?P<m>\d{2})(?::(?P<s>\d{2}))?"
+    r"(?:\s*(?P<offset>Z|[+-]\d{2}:\d{2})|\s+(?P<zone>ET|EST|EDT)))?$",
+    re.IGNORECASE,
+)
+
+EXPIRY_FORMS_HELP = """Accepted forms:
+  YYYY-MM-DD                          taken as 00:00 UTC of that day
+  YYYY-MM-DD HH:MM[:SS]Z              UTC
+  YYYY-MM-DD HH:MM[:SS]+HH:MM         explicit UTC offset (e.g. +05:30, -04:00)
+  YYYY-MM-DD HH:MM[:SS] ET|EST|EDT    US Eastern (America/New_York), as IBKR's portal shows it
+A 'T' may replace the space between date and time. Example: 2027-10-29 11:30 EDT
+IBKR's day-first display (DD/MM/YYYY HH:MM EDT) is not accepted because it is ambiguous;
+rewrite it as YYYY-MM-DD."""
+
+
+def parse_token_expiry(text: str) -> str:
+    """Parse a token expiry into an ISO-8601 UTC string (YYYY-MM-DDTHH:MM:SSZ).
+
+    ET/EST/EDT all mean the America/New_York zone; the offset is resolved from
+    the zone and the date, never from the abbreviation. Raises ValueError with
+    the accepted forms on anything else (including a naive date-time).
+    """
+    raw = (text or "").strip()
+    match = _EXPIRY_RE.match(raw)
+    if not match:
+        raise ValueError(f'Unrecognised token expiry "{text}".\n{EXPIRY_FORMS_HELP}')
+    try:
+        year, month, day = (int(x) for x in match["date"].split("-"))
+        if match["h"] is None:
+            moment = datetime(year, month, day, tzinfo=UTC)
+        else:
+            naive = datetime(year, month, day, int(match["h"]), int(match["m"]), int(match["s"] or 0))
+            if match["zone"]:
+                moment = naive.replace(tzinfo=EASTERN)
+            elif match["offset"].upper() == "Z":
+                moment = naive.replace(tzinfo=UTC)
+            else:
+                sign = -1 if match["offset"][0] == "-" else 1
+                hours, minutes = (int(x) for x in match["offset"][1:].split(":"))
+                if hours > 23 or minutes > 59:
+                    raise ValueError("offset out of range")
+                moment = naive.replace(tzinfo=timezone(sign * timedelta(hours=hours, minutes=minutes)))
+    except ValueError as e:
+        raise ValueError(f'Invalid token expiry "{text}": {e}.\n{EXPIRY_FORMS_HELP}') from None
+    return moment.astimezone(UTC).strftime(UTC_TIMESTAMP_FORMAT)
+
+
+def token_days_left(token_expires_at: str | None, now: datetime | None = None) -> int | None:
+    """Whole days until expiry, floored (negative once expired); None if unknown."""
+    if not token_expires_at:
+        return None
+    expires = datetime.strptime(token_expires_at, UTC_TIMESTAMP_FORMAT).replace(tzinfo=UTC)
+    now = now or datetime.now(UTC)
+    return math.floor((expires - now).total_seconds() / 86400)
+
+
+def _plural(n: int, unit: str) -> str:
+    return f"{n} {unit}{'' if n == 1 else 's'}"
+
+
+def describe_token_expiry(token_expires_at: str | None, now: datetime | None = None) -> str:
+    """'2027-10-29 15:30Z (in 336 days)', '... (EXPIRED 1 day ago)', '... (in 5 hours)' or 'unknown'.
+
+    Human wording only: the distance is the absolute time difference truncated
+    toward zero, in days, or in hours under 24 h. (The JSON days_left stays
+    floored, so it is negative exactly when the token has expired.)
+    """
+    if not token_expires_at:
+        return "unknown"
+    expires = datetime.strptime(token_expires_at, UTC_TIMESTAMP_FORMAT).replace(tzinfo=UTC)
+    seconds = (expires - (now or datetime.now(UTC))).total_seconds()
+    distance = abs(seconds)
+    if distance >= 86400:
+        span = _plural(int(distance // 86400), "day")
+    elif distance >= 3600:
+        span = _plural(int(distance // 3600), "hour")
+    else:
+        span = "less than an hour"
+    stamp = f"{token_expires_at[:10]} {token_expires_at[11:16]}Z"
+    if seconds >= 0:
+        return f"{stamp} (in {span})"
+    return f"{stamp} (EXPIRED {span} ago)"
+
+
+EXPIRY_NOT_RECORDED_NOTE = 'Token expiry not recorded. Record it with: pyflexweb account expiry {account_id} "<expiry shown by IBKR>"'
 
 
 def _effective_interval(query_info: dict) -> int:
@@ -62,27 +169,94 @@ def handle_account_command(args: dict[str, Any], db: FlexDatabase) -> int:
     """Handle the 'account' command and its subcommands."""
     if args.subcommand == "add":
         name = getattr(args, "name", None)
-        db.add_account(args.account_id, name, args.token)
+        expires_text = getattr(args, "expires", None)
+        expires_at = None
+        if expires_text is not None:
+            try:
+                expires_at = parse_token_expiry(expires_text)
+            except ValueError as e:
+                print(f"Error: {e}")
+                return 1
+        existed = db.add_account(args.account_id, name, args.token, token_expires_at=expires_at)
         display = f"{args.account_id}"
         if name:
             display += f" ({name})"
-        print(f"Account {display} added.")
+        print(f"Account {display} added.")  # unchanged pre-v7 line
+        if existed:
+            if name is None:
+                account = db.get_account(args.account_id)
+                kept = account.get("name") if isinstance(account, dict) else None
+                print(f"  Existing account: token replaced, name kept ({kept or 'unnamed'}).")
+            else:
+                print("  Existing account: token replaced.")
+        if expires_at:
+            print(f"Token expires {describe_token_expiry(expires_at)}.")
+        else:
+            print(EXPIRY_NOT_RECORDED_NOTE.format(account_id=args.account_id))
+        return 0
+
+    elif args.subcommand == "expiry":
+        account = db.get_account(args.account_id)
+        if not account:
+            print(f"Account '{args.account_id}' not found.")
+            return 1
+        when = getattr(args, "when", None)
+        unset = getattr(args, "unset", False) is True
+        if when is not None and unset:
+            print("Error: give either an expiry or --unset, not both.")
+            return 1
+        if unset:
+            db.set_token_expiry(args.account_id, None)
+            print(f"Token expiry of account {args.account_id} cleared.")
+            return 0
+        if when is not None:
+            try:
+                expires_at = parse_token_expiry(when)
+            except ValueError as e:
+                print(f"Error: {e}")
+                return 1
+            db.set_token_expiry(args.account_id, expires_at)
+            print(f"Token of account {args.account_id} expires {expires_at} ({describe_token_expiry(expires_at).split(' (', 1)[1]}.")
+            return 0
+        expires_at = account.get("token_expires_at")
+        if expires_at:
+            print(f"Token of account {args.account_id} expires {expires_at} ({describe_token_expiry(expires_at).split(' (', 1)[1]}.")
+        else:
+            print(EXPIRY_NOT_RECORDED_NOTE.format(account_id=args.account_id))
         return 0
 
     elif args.subcommand == "list":
         accounts = db.list_accounts()
+        if getattr(args, "json_output", False) is True:
+            now = datetime.now(UTC)
+            output = [
+                {
+                    "id": acct["id"],
+                    "name": acct["name"],
+                    "added_on": acct["added_on"],
+                    "token_expires_at": acct.get("token_expires_at"),
+                    "days_left": token_days_left(acct.get("token_expires_at"), now),
+                }
+                for acct in accounts
+            ]
+            print(json.dumps(output, indent=2))
+            return 0
+
         if not accounts:
             print("No accounts configured. Add one with 'pyflexweb account add <id> --token <token>'")
             return 0
 
-        print(f"{'ID':<20} {'Name':<25} {'Token':<20} {'Added':<20}")
-        print(f"{'-' * 20} {'-' * 25} {'-' * 20} {'-' * 20}")
+        now = datetime.now(UTC)
+        # Pre-v7 columns first, unchanged; the expiry column is appended.
+        print(f"{'ID':<20} {'Name':<25} {'Token':<20} {'Added':<20} {'Token expires (UTC)'}")
+        print(f"{'-' * 20} {'-' * 25} {'-' * 20} {'-' * 20} {'-' * 38}")
         for acct in accounts:
             acct_id = acct["id"]
             name = acct["name"] or "(unnamed)"
             token_display = acct["token"][:8] + "..." if len(acct["token"]) > 8 else acct["token"]
+            expiry = describe_token_expiry(acct.get("token_expires_at"), now)
             added = acct["added_on"][:19] if acct["added_on"] else "-"
-            print(f"{acct_id:<20} {name:<25} {token_display:<20} {added:<20}")
+            print(f"{acct_id:<20} {name:<25} {token_display:<20} {added:<20} {expiry}")
         return 0
 
     elif args.subcommand == "remove":
@@ -181,6 +355,25 @@ def handle_query_command(args: dict[str, Any], db: FlexDatabase) -> int:
             print(f"Query {args.query_id} min interval set to {args.hours}h.")
         return 0
 
+    elif args.subcommand == "type":
+        query_info = db.get_query_info(args.query_id)
+        if not query_info:
+            print(f"Query ID {args.query_id} not found.")
+            return 1
+        new_type = getattr(args, "query_type", None)
+        if new_type is None:
+            print(f"Query {args.query_id} type: {query_info['type']}")
+            return 0
+        if new_type not in VALID_QUERY_TYPES:
+            print(f"Error: type must be one of {', '.join(VALID_QUERY_TYPES)}.")
+            return 1
+        db.set_query_type(args.query_id, new_type)
+        query_info["type"] = new_type
+        interval = _effective_interval(query_info)
+        source = "per-query override" if query_info.get("min_interval") is not None else "type default"
+        print(f"Query {args.query_id} type set to {new_type} (effective interval {interval}h, {source}).")
+        return 0
+
     elif args.subcommand == "list":
         queries = db.get_all_queries_with_status()
         json_output = getattr(args, "json_output", False)
@@ -248,22 +441,93 @@ def handle_query_command(args: dict[str, Any], db: FlexDatabase) -> int:
         return 1
 
 
+def _as_flex_error(error: object, default_kind: str = "other") -> FlexError:
+    """Normalise client.last_error (may be missing on a stub client) into a FlexError."""
+    if isinstance(error, FlexError):
+        return error
+    return FlexError(code=None, message=None, kind=default_kind)
+
+
+FLEX_WEB_SERVICE_PAGE = "Client Portal (Performance & Reports > Flex Queries > Flex Web Service)"
+
+
+def _token_rejected_line(account_id: str, account_name: str | None, error: FlexError) -> str:
+    """The one-line TOKEN REJECTED alert, with the remedy for the error code. Never includes the token."""
+    who = f"{account_id} ({account_name})" if account_name else account_id
+    reason = " ".join(part for part in (error.code, error.message or "Unknown Flex error") if part)
+    if not reason.endswith("."):
+        reason += "."
+    name_opt = f' --name "{account_name}"' if account_name else ""
+    store = f'pyflexweb account add {account_id}{name_opt} --token <new token> --expires "<expiry shown by IBKR>"'
+    if error.code == "1013":
+        remedy = (
+            "The request came from an IP address the token does not allow: add this host's public IP to the token's "
+            f"allowed list in {FLEX_WEB_SERVICE_PAGE}, or create a token without the restriction and run: {store}"
+        )
+    elif error.code == "1011":
+        remedy = (
+            f"Flex Web Service is inactive for this login: re-activate it in {FLEX_WEB_SERVICE_PAGE}, "
+            f"then, if the old token no longer works, create a new token and run: {store}"
+        )
+    else:  # 1012 expired, 1015 invalid, or a token message without a known code
+        remedy = f"Create a new token in {FLEX_WEB_SERVICE_PAGE} and run: {store}"
+    return f"TOKEN REJECTED: IBKR refused the Flex token of account {who}: {reason} {remedy}"
+
+
 def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
-    """Handle the 'download' command."""
+    """Handle the 'download' command.
+
+    Exit codes: 0 ok (incl. nothing due), 1 a query failed, 3 a token was
+    rejected (wins over 1), 4 another download holds the lock.
+    """
+    query_type = getattr(args, "query_type", None)
+    if not isinstance(query_type, str):
+        query_type = None
+
+    # --- Validate options (no DB access, no HTTP) ---
+    if query_type is not None and args.query != "all":
+        print("Error: --type cannot be combined with --query <ID>.")
+        return 1
+
+    # --- Cross-process lock: held until this command returns ---
+    wait_lock = getattr(args, "wait_lock", 0)
+    wait_lock = wait_lock if isinstance(wait_lock, int) else 0
+    lock_path = os.path.join(db.db_dir, DOWNLOAD_LOCK_FILENAME)
+    lock_fd = acquire_file_lock(lock_path, wait_lock, LOCK_POLL_SECONDS)
+    if lock_fd is None:
+        print(f"Another pyflexweb download is running (lock: {lock_path}); nothing was requested.", file=sys.stderr, flush=True)
+        return EXIT_LOCKED
+    try:
+        return _run_download(args, db, query_type)
+    finally:
+        release_file_lock(lock_fd)
+
+
+def _run_download(args: dict[str, Any], db: FlexDatabase, query_type: str | None) -> int:
     # Determine which queries to download
     if args.query == "all":
+        if query_type is not None:
+            registered = [q for q in db.get_all_queries_with_status() if q.get("type", "activity") == query_type]
+            if not registered:
+                print(f"No {query_type} queries registered. Nothing to download.")
+                return EXIT_OK
         if args.force:
             queries_to_download = db.get_all_queries_with_status()
+            if query_type is not None:
+                queries_to_download = [q for q in queries_to_download if q.get("type", "activity") == query_type]
             if not queries_to_download:
                 print("No queries found. Add one with 'pyflexweb query add <query_id> --name \"Query name\"'")
-                return 0
-            print(f"Force downloading all {len(queries_to_download)} queries")
+                return EXIT_OK
+            print(f"Force downloading all {len(queries_to_download)} {query_type + ' ' if query_type else ''}queries")
         else:
             queries_to_download = db.get_queries_needing_download(TYPE_INTERVAL_DEFAULTS)
+            if query_type is not None:
+                queries_to_download = [q for q in queries_to_download if q.get("type", "activity") == query_type]
             if not queries_to_download:
-                print("All queries are up to date. Use --force to download anyway.")
-                return 0
-            print(f"Found {len(queries_to_download)} queries that need updating")
+                label = f"{query_type} " if query_type else ""
+                print(f"All {label}queries are up to date. Use --force to download anyway.")
+                return EXIT_OK
+            print(f"Found {len(queries_to_download)} {query_type + ' ' if query_type else ''}queries that need updating")
     else:
         query_info = db.get_query_info(args.query)
         if not query_info:
@@ -271,7 +535,8 @@ def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
             return 1
         queries_to_download = [query_info]
 
-    # Validate options
+    # Validate options (kept after query selection, as before v7, so existing
+    # output is unchanged)
     if args.query == "all" and args.output:
         print("Error: --output cannot be used with multiple queries/all mode.")
         print("Use --output-dir to specify a directory for all reports.")
@@ -288,16 +553,29 @@ def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
             return 1
 
     overall_success = True
+    token_rejected = False
+    # account_id -> the error that rejected its token earlier in this run
+    rejected_accounts: dict[str, FlexError] = {}
     requests_issued = 0
+
+    def reject_token(account_id: str, error: FlexError) -> None:
+        nonlocal token_rejected
+        token_rejected = True
+        if account_id in rejected_accounts:
+            return
+        rejected_accounts[account_id] = error
+        account = db.get_account(account_id)
+        name = account.get("name") if isinstance(account, dict) else None
+        print(_token_rejected_line(account_id, name, error), file=sys.stderr, flush=True)
 
     for query_info in queries_to_download:
         query_id = query_info["id"]
         query_name = query_info["name"] or query_id
+        account_id = query_info.get("account_id")
 
         # Resolve token for this query via its account
         token = db.resolve_token(query_id)
         if not token:
-            account_id = query_info.get("account_id")
             print(f"\nSkipping: {query_name} (ID: {query_id}) — token not found.")
             if account_id:
                 print(f"  Account '{account_id}' has no token configured.")
@@ -324,6 +602,15 @@ def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
                     print("  Use --force to download again.")
                     continue
 
+        # Never send another request with a token IBKR refused earlier in this run.
+        if account_id in rejected_accounts:
+            error = rejected_accounts[account_id]
+            print(f"  Skipped: token of account {account_id} was rejected earlier in this run")
+            db.add_request_error(query_id, account_id, "skipped", error.code, error.message, error.kind)
+            overall_success = False
+            token_rejected = True
+            continue
+
         # Request report from IBKR. Space actual network requests—not skipped
         # queries—so multi-query runs do not trip the token's burst throttle.
         # Waiting before each request after the first avoids both an initial
@@ -337,6 +624,10 @@ def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
         request_id = client.request_report(query_id)
         if not request_id:
             print("  Failed to request report.")
+            error = _as_flex_error(getattr(client, "last_error", None))
+            db.add_request_error(query_id, account_id, "send", error.code, error.message, error.kind)
+            if error.kind == "token" and account_id:
+                reject_token(account_id, error)
             overall_success = False
             continue
 
@@ -348,12 +639,12 @@ def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
         else:
             today = datetime.now().strftime("%Y%m%d")
             safe_name = "".join(c if c.isalnum() else "_" for c in (query_info["name"] or query_id))
-            account_id = query_info.get("account_id") or "unknown"
-            output_file = os.path.join(output_dir, f"{account_id}_{query_id}_{safe_name}_{today}.xml")
+            output_file = os.path.join(output_dir, f"{account_id or 'unknown'}_{query_id}_{safe_name}_{today}.xml")
 
         # Poll for the report
         print(f"  Polling (max {args.max_attempts} attempts, {args.poll_interval}s interval)...")
         report_xml = None
+        last_get_error: FlexError | None = None
 
         for attempt in range(1, args.max_attempts + 1):
             print(f"  Attempt {attempt}/{args.max_attempts}...", end="", flush=True)
@@ -365,13 +656,28 @@ def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
                 print(" OK")
                 break
 
+            error = getattr(client, "last_error", None)
+            if isinstance(error, FlexError):
+                last_get_error = error
+                if error.kind == "token":
+                    # Polling again would only resend the refused token.
+                    print(" token rejected")
+                    break
+
             print(" waiting...")
             if attempt < args.max_attempts:
                 time.sleep(args.poll_interval)
 
         if not report_xml:
-            print(f"  Report not available after {args.max_attempts} attempts.")
+            if last_get_error is not None and last_get_error.kind == "token":
+                print("  Report not retrieved: IBKR rejected the token.")
+            else:
+                print(f"  Report not available after {args.max_attempts} attempts.")
             db.update_request_status(request_id, "failed")
+            error = last_get_error or FlexError(code=None, message=None, kind="not_ready")
+            db.add_request_error(query_id, account_id, "get", error.code, error.message, error.kind)
+            if error.kind == "token" and account_id:
+                reject_token(account_id, error)
             overall_success = False
             continue
 
@@ -388,7 +694,9 @@ def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
 
         db.update_request_status(request_id, "completed", output_file)
 
-    return 0 if overall_success else 1
+    if token_rejected:
+        return EXIT_TOKEN_REJECTED
+    return EXIT_OK if overall_success else EXIT_QUERY_FAILED
 
 
 def handle_config_command(args: dict[str, Any], db: FlexDatabase) -> int:

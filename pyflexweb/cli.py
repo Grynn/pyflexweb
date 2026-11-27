@@ -19,6 +19,21 @@ from .handlers import (
 )
 
 
+class _LazyObj(dict):
+    """ctx.obj that opens (and, if needed, migrates) the database on first use of ctx.obj["db"].
+
+    `--help`, `--version` and usage errors are handled by click before any
+    command body runs, so they never open, create or migrate status.db.
+    """
+
+    def __missing__(self, key):
+        if key != "db":
+            raise KeyError(key)
+        db = FlexDatabase()
+        self["db"] = db
+        return db
+
+
 def get_effective_options(ctx, **provided_options):
     """Get effective options by combining provided options with defaults from config."""
     db = ctx.obj["db"]
@@ -57,17 +72,29 @@ def cli(ctx):
 
     Use 'pyflexweb config' to view/modify default settings.
     """
-    db = FlexDatabase()
-    ctx.ensure_object(dict)
-    ctx.obj["db"] = db
+    if ctx.obj is None:
+        ctx.obj = _LazyObj()
 
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
-        click.echo(f"\nDatabase directory: {db.db_dir}")
+        click.echo(f"\nDatabase directory: {resolve_data_dir()}")
         click.echo(f"Default output directory: {resolve_data_dir()}")
         exit(1)
 
     return 0
+
+
+@cli.result_callback()
+@click.pass_context
+def _exit_with_handler_code(ctx, rv, **_params):
+    """Make a handler's return value the process exit code.
+
+    Click's standalone mode discards a command's return value and exits 0, so
+    without this every command exited 0 even when its handler returned 1.
+    Nested groups pass the leaf command's value up to here.
+    """
+    if isinstance(rv, int) and not isinstance(rv, bool) and rv != 0:
+        ctx.exit(rv)
 
 
 # --- Token commands ---
@@ -115,26 +142,69 @@ def token_unset(ctx):
 def account(ctx):
     """Manage IBKR accounts (multi-account support)."""
     if ctx.invoked_subcommand is None:
-        args = type("Args", (), {"subcommand": "list"})
+        args = type("Args", (), {"subcommand": "list", "json_output": False})
         return handle_account_command(args, ctx.obj["db"])
 
 
 @account.command("add")
 @click.argument("account_id")
-@click.option("--name", default=None, help="Display name for the account (e.g. 'Cerabella')")
+@click.option("--name", default=None, help="Display name for the account (e.g. 'Cerabella'). Kept from the existing account when omitted.")
 @click.option("--token", "token_value", required=True, help="IBKR Flex token for this account")
+@click.option(
+    "--expires",
+    default=None,
+    help='Token expiry as shown by IBKR, e.g. "2027-10-29 11:30 EDT". Omitting it clears any stored expiry.',
+)
 @click.pass_context
-def account_add(ctx, account_id, name, token_value):
-    """Add an IBKR account with its own Flex token."""
-    args = type("Args", (), {"subcommand": "add", "account_id": account_id, "name": name, "token": token_value})
+def account_add(ctx, account_id, name, token_value, expires):
+    """Add an IBKR account with its own Flex token, or replace its token.
+
+    Re-adding an existing account replaces the token, keeps the name unless
+    --name is given, resets 'added' to now, and replaces the stored expiry
+    (cleared when --expires is omitted).
+    """
+    args = type(
+        "Args",
+        (),
+        {"subcommand": "add", "account_id": account_id, "name": name, "token": token_value, "expires": expires},
+    )
+    return handle_account_command(args, ctx.obj["db"])
+
+
+@account.command("expiry")
+@click.argument("account_id")
+@click.argument("when", nargs=-1)
+@click.option("--unset", is_flag=True, help="Clear the recorded expiry")
+@click.pass_context
+def account_expiry(ctx, account_id, when, unset):
+    """Show, set or clear the recorded expiry of an account's Flex token.
+
+    \b
+    WHEN forms (stored as UTC):
+      YYYY-MM-DD                          00:00 UTC of that day
+      YYYY-MM-DD HH:MM[:SS]Z              UTC
+      YYYY-MM-DD HH:MM[:SS]+HH:MM         explicit UTC offset
+      YYYY-MM-DD HH:MM[:SS] ET|EST|EDT    US Eastern, as IBKR's portal shows it
+    \b
+    Examples:
+      pyflexweb account expiry U1317359                       # show
+      pyflexweb account expiry U1317359 "2027-10-29 11:30 EDT"
+      pyflexweb account expiry U1317359 --unset
+    """
+    args = type(
+        "Args",
+        (),
+        {"subcommand": "expiry", "account_id": account_id, "when": " ".join(when) if when else None, "unset": unset},
+    )
     return handle_account_command(args, ctx.obj["db"])
 
 
 @account.command("list")
+@click.option("--json", "json_output", is_flag=True, help="Output JSON: id, name, added_on, token_expires_at, days_left (never the token)")
 @click.pass_context
-def account_list(ctx):
-    """List all configured accounts."""
-    args = type("Args", (), {"subcommand": "list"})
+def account_list(ctx, json_output):
+    """List all configured accounts with their token expiry."""
+    args = type("Args", (), {"subcommand": "list", "json_output": json_output})
     return handle_account_command(args, ctx.obj["db"])
 
 
@@ -298,6 +368,25 @@ def query_interval(ctx, query_id, hours, unset):
     return handle_query_command(args, ctx.obj["db"])
 
 
+@query.command("type")
+@click.argument("query_id")
+@click.argument("query_type", type=click.Choice(VALID_QUERY_TYPES), required=False)
+@click.pass_context
+def query_type_cmd(ctx, query_id, query_type):
+    """Show or change a query's type in place.
+
+    Only the type changes: name, account, added date, min-interval override
+    and download history are kept.
+
+    \b
+    Examples:
+      pyflexweb query type 12345                       # show
+      pyflexweb query type 12345 trade-confirmation    # change
+    """
+    args = type("Args", (), {"subcommand": "type", "query_id": query_id, "query_type": query_type})
+    return handle_query_command(args, ctx.obj["db"])
+
+
 @query.command("list")
 @click.option("--json", "json_output", is_flag=True, help="Output in JSON format")
 @click.pass_context
@@ -312,21 +401,59 @@ def query_list(ctx, json_output):
 
 @cli.command("download")
 @click.option("--query", default="all", help="The query ID to download a report for (default: all)")
+@click.option(
+    "--type",
+    "query_type",
+    type=click.Choice(VALID_QUERY_TYPES),
+    default=None,
+    help="Only queries of this type (only with --query all)",
+)
 @click.option("--force", is_flag=True, help="Force download even if recently downloaded")
 @click.option("--output", help="Output filename (for single report downloads only)")
 @click.option("--output-dir", help="Directory to save reports")
 @click.option("--poll-interval", type=int, help="Seconds to wait between polling attempts")
 @click.option("--max-attempts", type=int, help="Maximum number of polling attempts")
+@click.option(
+    "--wait-lock",
+    type=click.IntRange(min=0),
+    default=0,
+    show_default=True,
+    help="Seconds to wait for another running download to finish (0 = give up at once)",
+)
 @click.pass_context
-def download(ctx, query, force, output, output_dir, poll_interval, max_attempts):
+def download(ctx, query, query_type, force, output, output_dir, poll_interval, max_attempts, wait_lock):
     """Download Flex reports.
 
     If --query is not specified, downloads all queries that are due based on their
     type interval (activity: 6h, trade-confirmation: 1h). Per-query intervals can
-    be set with 'query interval <id> <hours>'.
+    be set with 'query interval <id> <hours>'. --type limits the run to one
+    query type.
+
+    Only one download runs at a time: it holds an exclusive lock on
+    download.lock in the data directory.
+
+    \b
+    Exit codes:
+      0  success (including nothing due / skipped within interval)
+      1  at least one query failed
+      2  usage error
+      3  IBKR rejected an account's Flex token (wins over 1; see the
+         'TOKEN REJECTED:' line on stderr)
+      4  another download holds the lock; nothing was requested
     """
+    if query_type is not None and query != "all":
+        raise click.UsageError("--type cannot be combined with --query <ID>; use it with --query all (the default).")
+
     effective_options = get_effective_options(
-        ctx, query=query, force=force, output=output, output_dir=output_dir, poll_interval=poll_interval, max_attempts=max_attempts
+        ctx,
+        query=query,
+        query_type=query_type,
+        force=force,
+        output=output,
+        output_dir=output_dir,
+        poll_interval=poll_interval,
+        max_attempts=max_attempts,
+        wait_lock=wait_lock,
     )
 
     args = type("Args", (), effective_options)
