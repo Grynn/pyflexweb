@@ -1,7 +1,5 @@
 """Command handlers for CLI commands."""
 
-import errno
-import fcntl
 import json
 import math
 import os
@@ -14,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from .client import FlexError, IBKRFlexClient
 from .database import UTC_TIMESTAMP_FORMAT, FlexDatabase
+from .locks import acquire_file_lock, release_file_lock
 
 # Default minimum interval between downloads (hours) per query type
 TYPE_INTERVAL_DEFAULTS = {
@@ -99,16 +98,32 @@ def token_days_left(token_expires_at: str | None, now: datetime | None = None) -
     return math.floor((expires - now).total_seconds() / 86400)
 
 
+def _plural(n: int, unit: str) -> str:
+    return f"{n} {unit}{'' if n == 1 else 's'}"
+
+
 def describe_token_expiry(token_expires_at: str | None, now: datetime | None = None) -> str:
-    """'2027-10-29 15:30Z (in 336 days)', '... (EXPIRED 3 days ago)' or 'unknown'."""
-    days = token_days_left(token_expires_at, now)
-    if days is None:
+    """'2027-10-29 15:30Z (in 336 days)', '... (EXPIRED 1 day ago)', '... (in 5 hours)' or 'unknown'.
+
+    Human wording only: the distance is the absolute time difference truncated
+    toward zero, in days, or in hours under 24 h. (The JSON days_left stays
+    floored, so it is negative exactly when the token has expired.)
+    """
+    if not token_expires_at:
         return "unknown"
+    expires = datetime.strptime(token_expires_at, UTC_TIMESTAMP_FORMAT).replace(tzinfo=UTC)
+    seconds = (expires - (now or datetime.now(UTC))).total_seconds()
+    distance = abs(seconds)
+    if distance >= 86400:
+        span = _plural(int(distance // 86400), "day")
+    elif distance >= 3600:
+        span = _plural(int(distance // 3600), "hour")
+    else:
+        span = "less than an hour"
     stamp = f"{token_expires_at[:10]} {token_expires_at[11:16]}Z"
-    if days >= 0:
-        return f"{stamp} (in {days} day{'' if days == 1 else 's'})"
-    ago = -days
-    return f"{stamp} (EXPIRED {ago} day{'' if ago == 1 else 's'} ago)"
+    if seconds >= 0:
+        return f"{stamp} (in {span})"
+    return f"{stamp} (EXPIRED {span} ago)"
 
 
 EXPIRY_NOT_RECORDED_NOTE = 'Token expiry not recorded. Record it with: pyflexweb account expiry {account_id} "<expiry shown by IBKR>"'
@@ -426,41 +441,6 @@ def handle_query_command(args: dict[str, Any], db: FlexDatabase) -> int:
         return 1
 
 
-def _acquire_download_lock(lock_path: str, wait_seconds: int) -> int | None:
-    """Take an exclusive flock on lock_path; return the fd, or None if still held after wait_seconds.
-
-    The file is created with mode 0664 if missing and never deleted (deleting a
-    lock file lets two processes lock different inodes).
-    """
-    created = not os.path.exists(lock_path)
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o664)
-    if created:
-        try:
-            os.fchmod(fd, 0o664)  # not narrowed by the umask
-        except OSError:
-            pass
-    attempts = max(0, math.ceil(wait_seconds / LOCK_POLL_SECONDS)) if wait_seconds else 0
-    for attempt in range(attempts + 1):
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return fd
-        except OSError as e:
-            if e.errno not in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
-                os.close(fd)
-                raise
-        if attempt < attempts:
-            time.sleep(LOCK_POLL_SECONDS)
-    os.close(fd)
-    return None
-
-
-def _release_download_lock(fd: int) -> None:
-    try:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-    finally:
-        os.close(fd)
-
-
 def _as_flex_error(error: object, default_kind: str = "other") -> FlexError:
     """Normalise client.last_error (may be missing on a stub client) into a FlexError."""
     if isinstance(error, FlexError):
@@ -468,18 +448,30 @@ def _as_flex_error(error: object, default_kind: str = "other") -> FlexError:
     return FlexError(code=None, message=None, kind=default_kind)
 
 
+FLEX_WEB_SERVICE_PAGE = "Client Portal (Performance & Reports > Flex Queries > Flex Web Service)"
+
+
 def _token_rejected_line(account_id: str, account_name: str | None, error: FlexError) -> str:
-    """The one-line TOKEN REJECTED alert. Never includes the token."""
+    """The one-line TOKEN REJECTED alert, with the remedy for the error code. Never includes the token."""
     who = f"{account_id} ({account_name})" if account_name else account_id
     reason = " ".join(part for part in (error.code, error.message or "Unknown Flex error") if part)
     if not reason.endswith("."):
         reason += "."
     name_opt = f' --name "{account_name}"' if account_name else ""
-    return (
-        f"TOKEN REJECTED: IBKR refused the Flex token of account {who}: {reason} "
-        "Create a new token in Client Portal (Performance & Reports > Flex Queries > Flex Web Service) "
-        f'and run: pyflexweb account add {account_id}{name_opt} --token <new token> --expires "<expiry shown by IBKR>"'
-    )
+    store = f'pyflexweb account add {account_id}{name_opt} --token <new token> --expires "<expiry shown by IBKR>"'
+    if error.code == "1013":
+        remedy = (
+            "The request came from an IP address the token does not allow: add this host's public IP to the token's "
+            f"allowed list in {FLEX_WEB_SERVICE_PAGE}, or create a token without the restriction and run: {store}"
+        )
+    elif error.code == "1011":
+        remedy = (
+            f"Flex Web Service is inactive for this login: re-activate it in {FLEX_WEB_SERVICE_PAGE}, "
+            f"then, if the old token no longer works, create a new token and run: {store}"
+        )
+    else:  # 1012 expired, 1015 invalid, or a token message without a known code
+        remedy = f"Create a new token in {FLEX_WEB_SERVICE_PAGE} and run: {store}"
+    return f"TOKEN REJECTED: IBKR refused the Flex token of account {who}: {reason} {remedy}"
 
 
 def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
@@ -501,14 +493,14 @@ def handle_download_command(args: dict[str, Any], db: FlexDatabase) -> int:
     wait_lock = getattr(args, "wait_lock", 0)
     wait_lock = wait_lock if isinstance(wait_lock, int) else 0
     lock_path = os.path.join(db.db_dir, DOWNLOAD_LOCK_FILENAME)
-    lock_fd = _acquire_download_lock(lock_path, wait_lock)
+    lock_fd = acquire_file_lock(lock_path, wait_lock, LOCK_POLL_SECONDS)
     if lock_fd is None:
         print(f"Another pyflexweb download is running (lock: {lock_path}); nothing was requested.", file=sys.stderr, flush=True)
         return EXIT_LOCKED
     try:
         return _run_download(args, db, query_type)
     finally:
-        _release_download_lock(lock_fd)
+        release_file_lock(lock_fd)
 
 
 def _run_download(args: dict[str, Any], db: FlexDatabase, query_type: str | None) -> int:
@@ -667,13 +659,20 @@ def _run_download(args: dict[str, Any], db: FlexDatabase, query_type: str | None
             error = getattr(client, "last_error", None)
             if isinstance(error, FlexError):
                 last_get_error = error
+                if error.kind == "token":
+                    # Polling again would only resend the refused token.
+                    print(" token rejected")
+                    break
 
             print(" waiting...")
             if attempt < args.max_attempts:
                 time.sleep(args.poll_interval)
 
         if not report_xml:
-            print(f"  Report not available after {args.max_attempts} attempts.")
+            if last_get_error is not None and last_get_error.kind == "token":
+                print("  Report not retrieved: IBKR rejected the token.")
+            else:
+                print(f"  Report not available after {args.max_attempts} attempts.")
             db.update_request_status(request_id, "failed")
             error = last_get_error or FlexError(code=None, message=None, kind="not_ready")
             db.add_request_error(query_id, account_id, "get", error.code, error.message, error.kind)

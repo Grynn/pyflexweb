@@ -19,6 +19,21 @@ from .handlers import (
 )
 
 
+class _LazyObj(dict):
+    """ctx.obj that opens (and, if needed, migrates) the database on first use of ctx.obj["db"].
+
+    `--help`, `--version` and usage errors are handled by click before any
+    command body runs, so they never open, create or migrate status.db.
+    """
+
+    def __missing__(self, key):
+        if key != "db":
+            raise KeyError(key)
+        db = FlexDatabase()
+        self["db"] = db
+        return db
+
+
 def get_effective_options(ctx, **provided_options):
     """Get effective options by combining provided options with defaults from config."""
     db = ctx.obj["db"]
@@ -57,13 +72,12 @@ def cli(ctx):
 
     Use 'pyflexweb config' to view/modify default settings.
     """
-    db = FlexDatabase()
-    ctx.ensure_object(dict)
-    ctx.obj["db"] = db
+    if ctx.obj is None:
+        ctx.obj = _LazyObj()
 
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
-        click.echo(f"\nDatabase directory: {db.db_dir}")
+        click.echo(f"\nDatabase directory: {resolve_data_dir()}")
         click.echo(f"Default output directory: {resolve_data_dir()}")
         exit(1)
 

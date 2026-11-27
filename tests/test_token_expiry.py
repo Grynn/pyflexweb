@@ -6,11 +6,14 @@ HTTP is mocked at `pyflexweb.client.requests.get` (no network).
 """
 
 import fcntl
+import glob
 import json
 import os
 import shutil
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
@@ -18,9 +21,17 @@ from urllib.parse import parse_qs, urlparse
 
 from click.testing import CliRunner
 
+from pyflexweb import database as database_module
 from pyflexweb.cli import cli, main
-from pyflexweb.database import FlexDatabase
-from pyflexweb.handlers import INTER_QUERY_DELAY_SECONDS, parse_token_expiry, token_days_left
+from pyflexweb.client import FlexError
+from pyflexweb.database import FlexDatabase, MigrationError
+from pyflexweb.handlers import (
+    INTER_QUERY_DELAY_SECONDS,
+    _token_rejected_line,
+    describe_token_expiry,
+    parse_token_expiry,
+    token_days_left,
+)
 
 TOKEN_EXPIRED_BODY = """<FlexStatementResponse timestamp="27 November, 2026 09:00 AM EST">
 <Status>Fail</Status>
@@ -392,7 +403,7 @@ class TestAccountExpiry(CliTestCase):
 
         table = self.invoke("account", "list").output
         self.assertIn("(in 10 days)", table)
-        self.assertIn("(EXPIRED 4 days ago)", table)
+        self.assertIn("(EXPIRED 3 days ago)", table)  # JSON days_left is floored (-4); the text is not
         self.assertIn("unknown", table)
 
 
@@ -587,6 +598,322 @@ class TestMigrationV6toV7(unittest.TestCase):
             db.add_request_error("Q1", "U1", "bogus", None, None, "other")
         with self.assertRaises(ValueError):
             db.add_request_error("Q1", "U1", "send", None, None, "bogus")
+
+
+V6_SCHEMA = """
+CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, token TEXT NOT NULL, added_on DATETIME DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE queries (id TEXT PRIMARY KEY, name TEXT, added_on DATETIME DEFAULT CURRENT_TIMESTAMP, min_interval INTEGER,
+    type TEXT DEFAULT 'activity', account_id TEXT NOT NULL REFERENCES accounts(id));
+CREATE TABLE requests (request_id TEXT PRIMARY KEY, query_id TEXT, status TEXT, requested_at DATETIME, completed_at DATETIME,
+    last_updated DATETIME, output_path TEXT, FOREIGN KEY (query_id) REFERENCES queries(id));
+INSERT INTO config VALUES ('db_version', '6');
+INSERT INTO accounts (id, name, token) VALUES ('U1', 'One', 'tok1');
+INSERT INTO queries (id, name, account_id) VALUES ('A1', 'Activity 1', 'U1');
+"""
+
+
+def make_v6_db(data_dir: str, wal: bool = False) -> sqlite3.Connection:
+    """Create a v6 status.db; return its (open) connection."""
+    conn = sqlite3.connect(os.path.join(data_dir, "status.db"))
+    if wal:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_autocheckpoint=0")
+    conn.executescript(V6_SCHEMA)
+    conn.commit()
+    return conn
+
+
+def db_version(data_dir: str) -> str:
+    conn = sqlite3.connect(os.path.join(data_dir, "status.db"))
+    try:
+        return conn.execute("SELECT value FROM config WHERE key = 'db_version'").fetchone()[0]
+    finally:
+        conn.close()
+
+
+class TestMigrationBackup(unittest.TestCase):
+    """Finding A: WAL-complete backup, never overwritten, failure aborts before any schema change."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def _open(self) -> FlexDatabase:
+        db = FlexDatabase(self.dir)
+        self.addCleanup(db.close)
+        return db
+
+    def test_backup_includes_uncheckpointed_wal_rows(self):
+        writer = make_v6_db(self.dir, wal=True)
+        self.addCleanup(writer.close)
+        writer.execute("INSERT INTO accounts (id, name, token) VALUES ('U2', 'In WAL only', 'tok2')")
+        writer.commit()
+        self.assertGreater(os.path.getsize(os.path.join(self.dir, "status.db-wal")), 0)
+
+        self._open()
+        backup = sqlite3.connect(os.path.join(self.dir, "status.db.v6.bak"))
+        self.addCleanup(backup.close)
+        self.assertEqual(backup.execute("SELECT id FROM accounts ORDER BY id").fetchall(), [("U1",), ("U2",)])
+        self.assertEqual(backup.execute("SELECT value FROM config WHERE key='db_version'").fetchone()[0], "6")
+
+    def test_existing_read_only_backup_is_kept_and_migration_succeeds(self):
+        make_v6_db(self.dir).close()
+        old = os.path.join(self.dir, "status.db.v6.bak")
+        with open(old, "w") as f:
+            f.write("older backup")
+        os.chmod(old, 0o444)
+        self.addCleanup(os.chmod, old, 0o644)
+
+        db = self._open()
+        self.assertEqual(db.get_config("db_version"), "7")
+        with open(old) as f:
+            self.assertEqual(f.read(), "older backup")
+        [stamped] = glob.glob(os.path.join(self.dir, "status.db.v6.*.bak"))
+        self.assertRegex(os.path.basename(stamped), r"^status\.db\.v6\.\d{8}T\d{6}Z\.bak$")
+        conn = sqlite3.connect(stamped)
+        self.addCleanup(conn.close)
+        self.assertEqual(conn.execute("SELECT value FROM config WHERE key='db_version'").fetchone()[0], "6")
+
+    def test_backup_failure_aborts_before_schema_change(self):
+        make_v6_db(self.dir).close()
+        unwritable = os.path.join(self.dir, "no-such-dir", "status.db.v6.bak")
+        with patch.object(FlexDatabase, "_backup_path", return_value=unwritable):
+            with self.assertRaises(MigrationError) as cm:
+                FlexDatabase(self.dir)
+        self.assertIn("status.db was not changed (still schema v6)", str(cm.exception))
+        self.assertEqual(db_version(self.dir), "6")
+        conn = sqlite3.connect(os.path.join(self.dir, "status.db"))
+        self.addCleanup(conn.close)
+        self.assertNotIn("token_expires_at", [r[1] for r in conn.execute("PRAGMA table_info(accounts)")])
+
+    def test_fresh_db_writes_no_backup(self):
+        self._open()
+        self.assertEqual(glob.glob(os.path.join(self.dir, "*.bak")), [])
+
+
+class TestLazyOpenAndMigrationLock(unittest.TestCase):
+    """Finding B: --help never opens the registry; migration is serialised across processes."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.runner = _runner()
+
+    def invoke(self, *argv):
+        return self.runner.invoke(cli, list(argv), env={"PYFLEXWEB_DATA_DIR": self.dir})
+
+    HELP_AND_USAGE = (
+        (["--help"], 0),
+        (["--version"], 0),
+        (["download", "--help"], 0),
+        (["account", "expiry", "--help"], 0),
+        (["query", "type", "--help"], 0),
+        (["download", "--bogus"], 2),
+        (["download", "--type", "activity", "--query", "A1"], 2),
+        (["account", "add", "U1"], 2),
+    )
+
+    def test_help_and_usage_errors_leave_v6_db_untouched(self):
+        make_v6_db(self.dir).close()
+        before = sorted(os.listdir(self.dir))
+        for argv, code in self.HELP_AND_USAGE:
+            with self.subTest(argv=argv):
+                result = self.invoke(*argv)
+                self.assertEqual(result.exit_code, code, result.output)
+        self.assertEqual(db_version(self.dir), "6")
+        self.assertEqual(sorted(os.listdir(self.dir)), before)
+
+    def test_help_creates_nothing_in_empty_dir(self):
+        data_dir = os.path.join(self.dir, "data")
+        os.mkdir(data_dir)
+        for argv, _code in self.HELP_AND_USAGE:
+            self.runner.invoke(cli, argv, env={"PYFLEXWEB_DATA_DIR": data_dir})
+        self.runner.invoke(cli, [], env={"PYFLEXWEB_DATA_DIR": data_dir})  # bare `pyflexweb` prints help too
+        self.assertEqual(os.listdir(data_dir), [])
+
+    def test_download_help_lists_type_and_wait_lock(self):
+        result = self.invoke("download", "--help")
+        self.assertIn("--type [activity|trade-confirmation]", result.output)
+        self.assertIn("--wait-lock", result.output)
+
+    def test_concurrent_first_opens_migrate_once(self):
+        make_v6_db(self.dir).close()
+        original = FlexDatabase._migrate
+        migrations: list[int] = []
+
+        def slow_migrate(db_self, conn, version):
+            migrations.append(version)
+            time.sleep(0.3)  # widen the race window
+            original(db_self, conn, version)
+
+        barrier = threading.Barrier(2)
+        errors: list[BaseException] = []
+
+        def open_db():
+            try:
+                barrier.wait()
+                FlexDatabase(self.dir).close()
+            except BaseException as e:  # noqa: BLE001 - surfaced below
+                errors.append(e)
+
+        with patch.object(FlexDatabase, "_migrate", slow_migrate):
+            threads = [threading.Thread(target=open_db) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(30)
+        self.assertEqual(errors, [])
+        self.assertEqual(migrations, [6])  # the second opener re-read the version under the lock and skipped
+        self.assertEqual(db_version(self.dir), "7")
+        self.assertEqual(len(glob.glob(os.path.join(self.dir, "status.db.v6*.bak"))), 1)
+
+    def test_migration_lock_wait_is_bounded(self):
+        make_v6_db(self.dir).close()
+        fd = os.open(os.path.join(self.dir, "migrate.lock"), os.O_RDONLY | os.O_CREAT, 0o664)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        with patch.object(database_module, "MIGRATE_LOCK_WAIT_SECONDS", 0.2):
+            with self.assertRaises(MigrationError) as cm:
+                FlexDatabase(self.dir)
+        self.assertIn("another pyflexweb process is migrating", str(cm.exception))
+        self.assertEqual(db_version(self.dir), "6")
+
+    def test_download_that_must_migrate_does_not_deadlock(self):
+        make_v6_db(self.dir).close()
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, True)
+        fake = FakeIBKR({"tok1": _success_body("REF-{q}")})
+        with patch("pyflexweb.client.requests.get", side_effect=fake), patch("time.sleep"):
+            result = self.invoke("download", "--output-dir", out, "--max-attempts", "1")
+        self.assertEqual(result.exit_code, 0, result.output + result.stderr)
+        self.assertEqual(db_version(self.dir), "7")
+
+
+class TestReadOnlyLockFile(CliTestCase):
+    """Finding C: an existing lock file without write permission still locks."""
+
+    def test_read_only_lock_file_still_locks(self):
+        db = self.db()
+        db.add_account("U1", "One", "tok1")
+        db.add_query("A1", "Activity 1", account_id="U1")
+        lock_path = os.path.join(self.data_dir, "download.lock")
+        with open(lock_path, "w"):
+            pass
+        os.chmod(lock_path, 0o444)
+        fake = FakeIBKR({"tok1": _success_body("REF-{q}")})
+        result = self.download(fake)
+        self.assertEqual(result.exit_code, 0, result.output + result.stderr)
+        self.assertEqual([c[0] for c in fake.calls], ["SendRequest", "GetStatement"])
+        self.assertEqual(os.stat(lock_path).st_mode & 0o777, 0o444)
+
+
+class TestTokenRejectedWhilePolling(CliTestCase):
+    """Finding D: a token-class GetStatement answer stops polling at once."""
+
+    def test_getstatement_token_error_stops_polling_and_skips_account(self):
+        db = self.db()
+        db.add_account("U1", "One", "tok1")
+        db.add_query("A1", "Activity 1", account_id="U1")
+        db.add_query("A2", "Activity 2", account_id="U1")
+        fake = FakeIBKR({"tok1": _success_body("REF-{q}")})
+
+        def route(url, timeout=None):
+            if "GetStatement" in url:
+                fake.calls.append(("GetStatement", "tok1", "REF"))
+                return _response(TOKEN_EXPIRED_BODY)
+            return fake(url, timeout)
+
+        with patch("pyflexweb.client.requests.get", side_effect=route):
+            result = self.invoke("download", "--output-dir", self.out_dir, "--poll-interval", "1", "--max-attempts", "5")
+
+        self.assertEqual(result.exit_code, 3, result.output + result.stderr)
+        self.assertEqual([c[0] for c in fake.calls], ["SendRequest", "GetStatement"])  # one poll, A2 never sent
+        self.assertIn("Error retrieving report: Token has expired.\n", result.stderr)
+        self.assertIn("  Attempt 1/5... token rejected\n", result.output)
+        self.assertNotIn("waiting...", result.output)
+        self.assertIn("  Report not retrieved: IBKR rejected the token.\n", result.output)
+        self.assertIn("  Skipped: token of account U1 was rejected earlier in this run\n", result.output)
+        self.assertEqual(
+            [line for line in result.stderr.splitlines() if line.startswith("TOKEN REJECTED:")],
+            [
+                "TOKEN REJECTED: IBKR refused the Flex token of account U1 (One): 1012 Token has expired. Create a new token in "
+                "Client Portal (Performance & Reports > Flex Queries > Flex Web Service) and run: "
+                'pyflexweb account add U1 --name "One" --token <new token> --expires "<expiry shown by IBKR>"'
+            ],
+        )
+        db = self.db()
+        self.assertEqual(db.get_latest_request("A1")["status"], "failed")
+        rows = [(e["query_id"], e["stage"], e["error_code"], e["kind"]) for e in db.list_request_errors()]
+        self.assertEqual(rows, [("A1", "get", "1012", "token"), ("A2", "skipped", "1012", "token")])
+
+
+class TestTokenRejectedRemedies(unittest.TestCase):
+    """Finding E: the remedy depends on the code; kind stays 'token'."""
+
+    PREFIX = "TOKEN REJECTED: IBKR refused the Flex token of account U1 (Main): "
+    STORE = 'pyflexweb account add U1 --name "Main" --token <new token> --expires "<expiry shown by IBKR>"'
+    PAGE = "Client Portal (Performance & Reports > Flex Queries > Flex Web Service)"
+
+    def line(self, code, message):
+        return _token_rejected_line("U1", "Main", FlexError(code=code, message=message, kind="token"))
+
+    def test_1012_and_1015_create_new_token(self):
+        for code, message in (("1012", "Token has expired."), ("1015", "Token is invalid.")):
+            with self.subTest(code=code):
+                self.assertEqual(
+                    self.line(code, message),
+                    f"{self.PREFIX}{code} {message} Create a new token in {self.PAGE} and run: {self.STORE}",
+                )
+
+    def test_1013_ip_restriction(self):
+        self.assertEqual(
+            self.line("1013", "IP restriction."),
+            f"{self.PREFIX}1013 IP restriction. The request came from an IP address the token does not allow: "
+            f"add this host's public IP to the token's allowed list in {self.PAGE}, "
+            f"or create a token without the restriction and run: {self.STORE}",
+        )
+
+    def test_1011_service_inactive(self):
+        self.assertEqual(
+            self.line("1011", "Service account is inactive."),
+            f"{self.PREFIX}1011 Service account is inactive. Flex Web Service is inactive for this login: "
+            f"re-activate it in {self.PAGE}, then, if the old token no longer works, create a new token and run: {self.STORE}",
+        )
+
+    def test_message_only_token_error(self):
+        self.assertEqual(
+            self.line(None, "Token has expired."),
+            f"{self.PREFIX}Token has expired. Create a new token in {self.PAGE} and run: {self.STORE}",
+        )
+
+
+class TestExpiryWording(unittest.TestCase):
+    """Finding F: human text truncates toward zero; JSON days_left stays floored."""
+
+    NOW = datetime(2027, 1, 10, 12, 0, tzinfo=UTC)
+
+    def at(self, delta: timedelta) -> str:
+        return (self.NOW + delta).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def test_wording(self):
+        cases = (
+            (timedelta(hours=-26), "EXPIRED 1 day ago", -2),
+            (timedelta(hours=-5), "EXPIRED 5 hours ago", -1),
+            (timedelta(minutes=-10), "EXPIRED less than an hour ago", -1),
+            (timedelta(minutes=10), "in less than an hour", 0),
+            (timedelta(hours=1), "in 1 hour", 0),
+            (timedelta(hours=5), "in 5 hours", 0),
+            (timedelta(hours=47), "in 1 day", 1),
+            (timedelta(days=336, hours=3), "in 336 days", 336),
+            (timedelta(days=-3, hours=-1), "EXPIRED 3 days ago", -4),
+        )
+        for delta, text, days_left in cases:
+            with self.subTest(delta=delta):
+                stamp = self.at(delta)
+                self.assertTrue(describe_token_expiry(stamp, self.NOW).endswith(f"({text})"))
+                self.assertEqual(token_days_left(stamp, self.NOW), days_left)
+        self.assertEqual(describe_token_expiry(None, self.NOW), "unknown")
 
 
 if __name__ == "__main__":

@@ -86,7 +86,8 @@ including a date-time without a zone and IBKR's own day-first display
 
 `days_left` (JSON) is the whole number of days left, rounded down: it is
 negative exactly when the token has expired, and `null` when no expiry is
-recorded.
+recorded. The table's wording uses the plain distance instead ("in 5 hours",
+"EXPIRED 1 day ago" for 26 hours ago).
 
 Re-adding an existing account (`account add` with the same ID) replaces the
 token, keeps the existing name unless `--name` is given, resets `added_on` to
@@ -155,20 +156,42 @@ exits with its handler's code (for example `query remove <unknown id>` exits 1).
 
 When IBKR refuses a token (ErrorCode 1011 service account inactive, 1012 token
 expired, 1013 IP restriction, 1015 token invalid), `download` prints one line to
-stderr, in addition to the existing `Error requesting report: ...` line:
+stderr, in addition to the existing `Error requesting report: ...` (SendRequest)
+or `Error retrieving report: ...` (GetStatement) line:
 
 ```
 TOKEN REJECTED: IBKR refused the Flex token of account U1317359 (Cerabella): 1012 Token has expired. Create a new token in Client Portal (Performance & Reports > Flex Queries > Flex Web Service) and run: pyflexweb account add U1317359 --name "Cerabella" --token <new token> --expires "<expiry shown by IBKR>"
 ```
 
-The token itself is never printed. For the rest of that run no request is sent
-with that account's token: each remaining query of the account prints
-`  Skipped: token of account U1317359 was rejected earlier in this run` and is
-logged in `request_errors` with stage `skipped`. Queries of other accounts
-continue normally, and the run exits 3.
+The line always starts with `TOKEN REJECTED:` and carries `<code> <message>`;
+the remedy depends on the code:
 
-All lines `download` printed up to v0.4.1 are still printed, unchanged, in the
-same situations; the lines above are added alongside them.
+- 1012 / 1015 (and a token message without a known code): create a new token and store it, as above.
+- 1013: the request came from an IP address the token does not allow. Add this
+  host's public IP to the token's allowed list in Client Portal (Flex Web
+  Service), or create a token without the restriction and store it.
+- 1011: Flex Web Service is inactive for this login. Re-activate it in Client
+  Portal (Flex Web Service), then create and store a token if the old one no
+  longer works.
+
+The token itself is never printed. For the rest of that run no request is sent
+with that account's token:
+
+- If GetStatement refuses the token while polling, polling stops at once
+  (`  Attempt N/M... token rejected`, then `  Report not retrieved: IBKR rejected the token.`)
+  instead of retrying every attempt with the same token.
+- Each remaining query of the account prints
+  `  Skipped: token of account U1317359 was rejected earlier in this run` (after
+  its usual `Downloading: <name> (ID: <id>)` line) and is logged in
+  `request_errors` with stage `skipped`. It sends nothing, so it prints none of
+  the request/polling lines.
+
+Queries of other accounts continue normally, and the run exits 3.
+
+Output compatibility: in every situation that existed up to v0.4.1, `download`
+prints the same lines as before, byte for byte. The output differs only in
+the two token cases above: an account's later queries after a refusal, and a
+refusal while polling.
 
 ### One download at a time
 
@@ -179,7 +202,20 @@ same token without the two-minute spacing. If the lock is held, `download`
 prints `Another pyflexweb download is running (lock: <path>); nothing was requested.`
 to stderr and exits 4. `--wait-lock SECONDS` waits up to that long for the lock
 first (default 0: give up at once). Other commands take no lock. The lock file
-is never deleted.
+is created with mode 0664, opened read-only (so a lock file created by another
+user still works) and never deleted.
+
+### Schema migrations
+
+Opening a registry with an older schema migrates it in place. `--help`,
+`--version` and usage errors never open the registry, so they never create or
+migrate anything. Migrations take an exclusive lock on `migrate.lock` in the
+data directory (waiting up to 60 s; another process opening the registry at the
+same moment waits and then finds it migrated). Before changing anything, the
+migration writes `status.db.v<old version>.bak` with SQLite's backup API, so
+rows still in the WAL are included. An existing backup is never overwritten: a
+`status.db.v<N>.<UTC timestamp>.bak` is written instead. If the backup cannot
+be written, the migration stops with an error and `status.db` is left as it was.
 
 ## `status.db` contract for monitors (schema v7)
 

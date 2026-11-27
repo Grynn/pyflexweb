@@ -1,11 +1,12 @@
 """Database module for storing tokens, queries, and download history."""
 
 import os
-import shutil
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import platformdirs
+
+from .locks import acquire_file_lock, release_file_lock
 
 PLACEHOLDER_ACCOUNT_ID = "__default__"
 
@@ -36,6 +37,17 @@ CREATE TABLE IF NOT EXISTS request_errors (
 REQUEST_ERRORS_INDEX_DDL = "CREATE INDEX IF NOT EXISTS idx_request_errors_query_time ON request_errors (query_id, occurred_at)"
 
 
+# Serialises "read db_version -> migrate" across processes. A file of its own,
+# so a `download` (which holds download.lock) can never deadlock on it.
+MIGRATE_LOCK_FILENAME = "migrate.lock"
+MIGRATE_LOCK_WAIT_SECONDS = 60
+MIGRATE_LOCK_POLL_SECONDS = 0.1
+
+
+class MigrationError(RuntimeError):
+    """The schema migration could not run; status.db was left unchanged."""
+
+
 def resolve_data_dir() -> str:
     """Resolve pyflexweb data directory with fallback chain.
 
@@ -62,6 +74,8 @@ class FlexDatabase:
         self.db_dir = db_dir if db_dir is not None else resolve_data_dir()
         os.makedirs(self.db_dir, exist_ok=True)
         self.db_path = os.path.join(self.db_dir, "status.db")
+        # A brand-new file holds nothing worth a pre-migration backup.
+        self._created_now = not os.path.exists(self.db_path)
         self.conn = self._init_db()
 
     def get_db_path(self) -> str:
@@ -128,21 +142,77 @@ class FlexDatabase:
         self._check_migration(conn)
         return conn
 
+    @staticmethod
+    def _read_version(conn: sqlite3.Connection) -> int:
+        result = conn.execute("SELECT value FROM config WHERE key = 'db_version' LIMIT 1").fetchone()
+        return int(result[0]) if result else 0
+
     def _check_migration(self, conn: sqlite3.Connection) -> None:
-        """Check if database needs migration and perform if needed."""
-        cursor = conn.cursor()
+        """Migrate the schema if needed, one process at a time.
 
-        cursor.execute("SELECT value FROM config WHERE key = 'db_version' LIMIT 1")
-        result = cursor.fetchone()
-        current_version = int(result[0]) if result else 0
-
-        if current_version >= self.DB_VERSION:
+        An up-to-date database takes no lock. Otherwise an exclusive flock on
+        migrate.lock is taken (waiting up to MIGRATE_LOCK_WAIT_SECONDS), the
+        version is re-read (another process may have just migrated), a
+        WAL-complete backup is written, and only then is the schema changed.
+        """
+        if self._read_version(conn) >= self.DB_VERSION:
             return
 
-        # --- Backup before migration ---
-        if os.path.exists(self.db_path):
-            backup_path = f"{self.db_path}.v{current_version}.bak"
-            shutil.copy2(self.db_path, backup_path)
+        lock_path = os.path.join(self.db_dir, MIGRATE_LOCK_FILENAME)
+        lock_fd = acquire_file_lock(lock_path, MIGRATE_LOCK_WAIT_SECONDS, MIGRATE_LOCK_POLL_SECONDS)
+        if lock_fd is None:
+            raise MigrationError(
+                f"Timed out after {MIGRATE_LOCK_WAIT_SECONDS}s waiting for {lock_path}: another pyflexweb process "
+                "is migrating status.db. Try again when it has finished."
+            )
+        try:
+            current_version = self._read_version(conn)
+            if current_version >= self.DB_VERSION:
+                return
+            if not self._created_now:
+                self._backup_before_migration(conn, current_version)
+            self._migrate(conn, current_version)
+        finally:
+            release_file_lock(lock_fd)
+
+    def _backup_path(self, version: int) -> str:
+        """status.db.v<N>.bak, or a timestamped name if that already exists (never overwrite a backup)."""
+        path = f"{self.db_path}.v{version}.bak"
+        if not os.path.exists(path):
+            return path
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        path = f"{self.db_path}.v{version}.{stamp}.bak"
+        n = 1
+        while os.path.exists(path):
+            n += 1
+            path = f"{self.db_path}.v{version}.{stamp}-{n}.bak"
+        return path
+
+    def _backup_before_migration(self, conn: sqlite3.Connection, version: int) -> None:
+        """Write a backup with SQLite's backup API (includes rows still in the WAL).
+
+        Any failure raises MigrationError before the schema is touched.
+        """
+        backup_path = self._backup_path(version)
+        try:
+            dst = sqlite3.connect(backup_path)
+            try:
+                conn.backup(dst)
+            finally:
+                dst.close()
+        except (sqlite3.Error, OSError) as e:
+            try:
+                if os.path.exists(backup_path):
+                    os.remove(backup_path)
+            except OSError:
+                pass
+            raise MigrationError(
+                f"Could not write the pre-migration backup {backup_path}: {e}. status.db was not changed (still schema v{version})."
+            ) from e
+
+    def _migrate(self, conn: sqlite3.Connection, current_version: int) -> None:
+        """Run every migration step after current_version. Caller holds the migrate lock."""
+        cursor = conn.cursor()
 
         # Temporarily disable FK enforcement so table renames/drops
         # don't trigger foreign-key violations during migration.
