@@ -1,5 +1,7 @@
 """Tests for the handlers module."""
 
+import shutil
+import tempfile
 import unittest
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -90,22 +92,24 @@ class TestAccountHandler(unittest.TestCase):
     def test_account_add(self):
         """Test adding an account."""
         args = type("Args", (), {"subcommand": "add", "account_id": "U1317359", "name": "Cerabella", "token": "tok_abc"})
+        self.mock_db.add_account.return_value = False  # new account
 
         with patch("builtins.print") as mock_print:
             result = handle_account_command(args, self.mock_db)
             self.assertEqual(result, 0)
-            self.mock_db.add_account.assert_called_once_with("U1317359", "Cerabella", "tok_abc")
-            mock_print.assert_called_once_with("Account U1317359 (Cerabella) added.")
+            self.mock_db.add_account.assert_called_once_with("U1317359", "Cerabella", "tok_abc", token_expires_at=None)
+            mock_print.assert_any_call("Account U1317359 (Cerabella) added.")
 
     def test_account_add_no_name(self):
         """Test adding an account without a name."""
         args = type("Args", (), {"subcommand": "add", "account_id": "U999", "name": None, "token": "tok_xyz"})
+        self.mock_db.add_account.return_value = False  # new account
 
         with patch("builtins.print") as mock_print:
             result = handle_account_command(args, self.mock_db)
             self.assertEqual(result, 0)
-            self.mock_db.add_account.assert_called_once_with("U999", None, "tok_xyz")
-            mock_print.assert_called_once_with("Account U999 added.")
+            self.mock_db.add_account.assert_called_once_with("U999", None, "tok_xyz", token_expires_at=None)
+            mock_print.assert_any_call("Account U999 added.")
 
     def test_account_list_empty(self):
         """Test listing accounts when none exist."""
@@ -497,6 +501,10 @@ class TestDownloadHandler(unittest.TestCase):
 
     def setUp(self):
         self.mock_db = MagicMock()
+        # download takes a lock file next to status.db
+        self.lock_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.lock_dir, True)
+        self.mock_db.db_dir = self.lock_dir
 
         self.mock_client_patcher = patch("pyflexweb.handlers.IBKRFlexClient")
         self.mock_client_class = self.mock_client_patcher.start()

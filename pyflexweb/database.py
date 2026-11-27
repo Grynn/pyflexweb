@@ -3,11 +3,37 @@
 import os
 import shutil
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import platformdirs
 
 PLACEHOLDER_ACCOUNT_ID = "__default__"
+
+# Format of every UTC timestamp written by schema v7 (accounts.token_expires_at,
+# request_errors.occurred_at). Fixed width, so string order is time order.
+UTC_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+# request_errors rows older than this are pruned (per query) on each insert.
+REQUEST_ERRORS_RETENTION_DAYS = 90
+
+REQUEST_ERROR_STAGES = ("send", "get", "skipped")
+REQUEST_ERROR_KINDS = ("token", "rate_limit", "not_ready", "other")
+
+# Schema v7 contract: external monitors read this table from a copy of status.db.
+# Keep the column names and value sets stable.
+REQUEST_ERRORS_DDL = """
+CREATE TABLE IF NOT EXISTS request_errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    query_id TEXT NOT NULL,
+    account_id TEXT,
+    occurred_at TEXT NOT NULL,  -- ISO-8601 UTC, YYYY-MM-DDTHH:MM:SSZ
+    stage TEXT NOT NULL,        -- 'send' | 'get' | 'skipped'
+    error_code TEXT,            -- IBKR Flex ErrorCode, NULL for network/parse failures
+    error_message TEXT,
+    kind TEXT NOT NULL          -- 'token' | 'rate_limit' | 'not_ready' | 'other'
+)
+"""
+REQUEST_ERRORS_INDEX_DDL = "CREATE INDEX IF NOT EXISTS idx_request_errors_query_time ON request_errors (query_id, occurred_at)"
 
 
 def resolve_data_dir() -> str:
@@ -30,7 +56,7 @@ def resolve_data_dir() -> str:
 class FlexDatabase:
     """Manages the local database for tokens, queries, and download history."""
 
-    DB_VERSION = 6  # Increment when schema changes
+    DB_VERSION = 7  # Increment when schema changes
 
     def __init__(self, db_dir: str | None = None):
         self.db_dir = db_dir if db_dir is not None else resolve_data_dir()
@@ -62,7 +88,8 @@ class FlexDatabase:
             id TEXT PRIMARY KEY,
             name TEXT,
             token TEXT NOT NULL,
-            added_on DATETIME DEFAULT CURRENT_TIMESTAMP
+            added_on DATETIME DEFAULT CURRENT_TIMESTAMP,
+            token_expires_at TEXT
         )
         """
         )
@@ -251,6 +278,16 @@ class FlexDatabase:
                 cursor.execute("DROP TABLE queries_old")
                 conn.commit()
 
+        if current_version < 7:
+            # Token expiry record + per-query error log (idempotent: column added
+            # only if missing; table/index use IF NOT EXISTS).
+            cursor.execute("PRAGMA table_info(accounts)")
+            if "token_expires_at" not in {row[1] for row in cursor.fetchall()}:
+                cursor.execute("ALTER TABLE accounts ADD COLUMN token_expires_at TEXT")
+            cursor.execute(REQUEST_ERRORS_DDL)
+            cursor.execute(REQUEST_ERRORS_INDEX_DDL)
+            conn.commit()
+
         cursor.execute(
             "INSERT OR REPLACE INTO config VALUES (?, ?)",
             ("db_version", str(self.DB_VERSION)),
@@ -330,29 +367,57 @@ class FlexDatabase:
 
     # --- Accounts ---
 
-    def add_account(self, account_id: str, name: str | None, token: str) -> None:
-        """Add or update an account."""
+    def add_account(self, account_id: str, name: str | None, token: str, token_expires_at: str | None = None) -> bool:
+        """Add an account, or replace the token of an existing one.
+
+        On a re-add the token and token_expires_at are replaced (None clears the
+        expiry: a new token's expiry is unknown until stated), added_on is reset
+        to now (readers treat it as "token last set"), and the name is kept when
+        name is None.
+
+        Returns True if the account already existed, False if it was created.
+        """
         cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO accounts (id, name, token) VALUES (?, ?, ?)",
-            (account_id, name, token),
-        )
+        cursor.execute("SELECT 1 FROM accounts WHERE id = ?", (account_id,))
+        existed = cursor.fetchone() is not None
+        if existed:
+            cursor.execute(
+                "UPDATE accounts SET token = ?, name = COALESCE(?, name), token_expires_at = ?, added_on = CURRENT_TIMESTAMP WHERE id = ?",
+                (token, name, token_expires_at, account_id),
+            )
+        else:
+            cursor.execute(
+                "INSERT INTO accounts (id, name, token, token_expires_at) VALUES (?, ?, ?, ?)",
+                (account_id, name, token, token_expires_at),
+            )
         self.conn.commit()
+        return existed
+
+    def set_token_expiry(self, account_id: str, token_expires_at: str | None) -> bool:
+        """Set (or clear, with None) an account's token expiry. Returns False if the account is unknown."""
+        cursor = self.conn.cursor()
+        cursor.execute("UPDATE accounts SET token_expires_at = ? WHERE id = ?", (token_expires_at, account_id))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def _account_row(r: tuple) -> dict:
+        return {"id": r[0], "name": r[1], "token": r[2], "added_on": r[3], "token_expires_at": r[4]}
 
     def get_account(self, account_id: str) -> dict | None:
         """Get account info by ID."""
         cursor = self.conn.cursor()
-        cursor.execute("SELECT id, name, token, added_on FROM accounts WHERE id = ?", (account_id,))
+        cursor.execute("SELECT id, name, token, added_on, token_expires_at FROM accounts WHERE id = ?", (account_id,))
         result = cursor.fetchone()
         if not result:
             return None
-        return {"id": result[0], "name": result[1], "token": result[2], "added_on": result[3]}
+        return self._account_row(result)
 
     def list_accounts(self) -> list[dict]:
         """List all accounts."""
         cursor = self.conn.cursor()
-        cursor.execute("SELECT id, name, token, added_on FROM accounts ORDER BY added_on")
-        return [{"id": r[0], "name": r[1], "token": r[2], "added_on": r[3]} for r in cursor.fetchall()]
+        cursor.execute("SELECT id, name, token, added_on, token_expires_at FROM accounts ORDER BY added_on")
+        return [self._account_row(r) for r in cursor.fetchall()]
 
     def remove_account(self, account_id: str) -> bool | None:
         """Remove an account.
@@ -419,6 +484,13 @@ class FlexDatabase:
         """Set the minimum download interval (hours) for a query. None to use type default."""
         cursor = self.conn.cursor()
         cursor.execute("UPDATE queries SET min_interval = ? WHERE id = ?", (min_interval, query_id))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def set_query_type(self, query_id: str, query_type: str) -> bool:
+        """Change a query's type in place (name, account, added_on, min_interval and history untouched)."""
+        cursor = self.conn.cursor()
+        cursor.execute("UPDATE queries SET type = ? WHERE id = ?", (query_type, query_id))
         self.conn.commit()
         return cursor.rowcount > 0
 
@@ -510,6 +582,43 @@ class FlexDatabase:
                 (status, now, request_id),
             )
         self.conn.commit()
+
+    def add_request_error(
+        self,
+        query_id: str,
+        account_id: str | None,
+        stage: str,
+        error_code: str | None,
+        error_message: str | None,
+        kind: str,
+    ) -> None:
+        """Record a failed Flex request and prune this query's rows older than the retention window."""
+        if stage not in REQUEST_ERROR_STAGES:
+            raise ValueError(f"invalid stage {stage!r}; expected one of {REQUEST_ERROR_STAGES}")
+        if kind not in REQUEST_ERROR_KINDS:
+            raise ValueError(f"invalid kind {kind!r}; expected one of {REQUEST_ERROR_KINDS}")
+        now = datetime.now(UTC)
+        cutoff = (now - timedelta(days=REQUEST_ERRORS_RETENTION_DAYS)).strftime(UTC_TIMESTAMP_FORMAT)
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM request_errors WHERE query_id = ? AND occurred_at < ?", (query_id, cutoff))
+        cursor.execute(
+            "INSERT INTO request_errors (query_id, account_id, occurred_at, stage, error_code, error_message, kind)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (query_id, account_id, now.strftime(UTC_TIMESTAMP_FORMAT), stage, error_code, error_message, kind),
+        )
+        self.conn.commit()
+
+    def list_request_errors(self, query_id: str | None = None) -> list[dict]:
+        """Return request_errors rows (oldest first), optionally for one query."""
+        cursor = self.conn.cursor()
+        sql = "SELECT id, query_id, account_id, occurred_at, stage, error_code, error_message, kind FROM request_errors"
+        params: tuple = ()
+        if query_id is not None:
+            sql += " WHERE query_id = ?"
+            params = (query_id,)
+        cursor.execute(sql + " ORDER BY occurred_at, id", params)
+        cols = ("id", "query_id", "account_id", "occurred_at", "stage", "error_code", "error_message", "kind")
+        return [dict(zip(cols, row, strict=True)) for row in cursor.fetchall()]
 
     def get_request_info(self, request_id: str) -> dict | None:
         cursor = self.conn.cursor()
